@@ -2,6 +2,7 @@
 import re
 import shlex
 import subprocess
+import ctypes
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List
@@ -222,6 +223,28 @@ def pid_value() -> int:
         return 0
 
 
+def is_process_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        proc = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        out = (proc.stdout or "").strip()
+        if not out:
+            return False
+        if "No tasks are running" in out:
+            return False
+        return f'"{pid}"' in out
+    except Exception:
+        return False
+
+
 class LlamaLauncherApp(App):
     CSS = """
     #main { layout: vertical; height: 1fr; }
@@ -229,10 +252,20 @@ class LlamaLauncherApp(App):
     #left { width: 30; padding: 0 1; border: round #666666; }
     #center { width: 1fr; padding: 0 1; border: round #666666; overflow-y: auto; }
     #right { width: 56; padding: 0 1; border: round #666666; }
-    #console_panel { height: 3; padding: 0 1; border: round #666666; margin-top: 1; }
-    #console_header { height: auto; }
-    #console_toggle { width: 1fr; content-align: left middle; text-align: left; }
-    #logs { height: 1fr; border: round #444444; margin-top: 1; }
+    #console_panel { height: 14; padding: 0; border: none; margin-top: 0; position: relative; }
+    #console_fullscreen_btn {
+        width: 5;
+        height: 1;
+        min-width: 5;
+        position: absolute;
+        layer: overlay;
+        offset: 1 1;
+        content-align: center middle;
+        text-align: center;
+        border: round #666666;
+        background: #111111 85%;
+    }
+    #logs { height: 1fr; border: round #444444; margin-top: 0; }
     .row { height: auto; margin: 0; }
     .title { text-style: bold; margin: 0 0 1 0; }
     .pair { height: 3; }
@@ -242,6 +275,7 @@ class LlamaLauncherApp(App):
     #profile_block { height: auto; border: round #444444; padding: 0 1; }
     #adv_desc { height: 8; border: round #444444; padding: 0 1; }
     #adv_table { height: 12; border: round #444444; padding: 0 1; }
+    #monitoring { height: 4; border: round #444444; padding: 0 1; margin: 1 0; }
     .adv-row { height: 1; }
     .adv-opt { width: 1fr; }
     .adv-opt-btn { width: 1fr; content-align: left middle; text-align: left; border: none; padding: 0; }
@@ -253,7 +287,7 @@ class LlamaLauncherApp(App):
 
     active_profile_index = reactive(0)
     logs_following = reactive(True)
-    console_expanded = reactive(False)
+    console_fullscreen = reactive(False)
 
     def __init__(self) -> None:
         super().__init__()
@@ -266,6 +300,7 @@ class LlamaLauncherApp(App):
         self.adv_table_switch_to_key: Dict[str, str] = {}
         self.adv_table_button_to_key: Dict[str, str] = {}
         self.center_fav_button_to_key: Dict[str, str] = {}
+        self.session_has_server_output = False
 
     @property
     def profile(self) -> Profile:
@@ -304,8 +339,8 @@ class LlamaLauncherApp(App):
                             yield Static("(aucune option active)")
                     yield Horizontal(Button("Sauver profil", id="save_profile"), classes="row")
                 with Vertical(id="right"):
-                    yield Label("Global + Avances", classes="title")
                     yield Horizontal(Button("Launch", id="launch"), Button("Stop", id="stop"), Button("Restart", id="restart"), classes="row")
+                    yield Static("RAM: N/A\nVRAM: N/A", id="monitoring")
                     yield Horizontal(Label("Server"), Input(placeholder="llama-server.exe", id="g_server"), classes="pair")
                     yield Label("Configuration Avancee", classes="title")
                     yield Horizontal(Label("Recherche"), Input(placeholder="rechercher une option...", id="adv_search"), classes="row")
@@ -317,9 +352,8 @@ class LlamaLauncherApp(App):
                     yield Button("Supprimer dossier", id="g_del_dir_btn")
                     yield Button("Sauver global", id="save_global")
             with Vertical(id="console_panel"):
-                with Horizontal(id="console_header"):
-                    yield Button("Console stderr (repliee) - cliquer pour deplier", id="console_toggle")
                 yield Log(id="logs")
+                yield Button("FS", id="console_fullscreen_btn")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -335,9 +369,18 @@ class LlamaLauncherApp(App):
         self.refresh_model_dirs_select()
         self.load_advanced_from_server(auto=True)
         self.query_one("#adv_desc", Static).visible = False
-        self.query_one("#logs", Log).visible = False
-        self.set_status("Pret.")
-        self.set_interval(0.6, self.tick_tail)
+        self.query_one("#logs", Log).visible = True
+        existing_pid = pid_value()
+        if existing_pid > 0 and is_process_running(existing_pid):
+            self.session_has_server_output = True
+            self._last_log_size = 0
+            self.set_status(f"Attache a llama-server deja actif (PID {existing_pid}).")
+        else:
+            self.set_status("Pret.")
+        self.position_console_button()
+        self.set_interval(0.2, self.tick_tail)
+        self.set_interval(1.0, self.tick_monitoring)
+        self.tick_monitoring()
 
     def set_status(self, text: str) -> None:
         self.query_one("#status", Static).update(text)
@@ -712,34 +755,56 @@ class LlamaLauncherApp(App):
             elif bid == "restart":
                 self.stop_server()
                 self.launch_server()
-            elif bid == "console_toggle":
-                self.console_expanded = not self.console_expanded
-                self.query_one("#logs", Log).visible = self.console_expanded
-                self.query_one("#console_panel", Vertical).styles.height = 14 if self.console_expanded else 3
-                self.query_one("#console_toggle", Button).label = (
-                    "Console stderr (depliee) - cliquer pour replier"
-                    if self.console_expanded
-                    else "Console stderr (repliee) - cliquer pour deplier"
-                )
-                self._last_log_size = 0
-                if self.console_expanded:
-                    self.render_log_snapshot()
-                self.set_status("Console stderr deployee." if self.console_expanded else "Console stderr repliee.")
+            elif bid == "console_fullscreen_btn":
+                self.toggle_console_fullscreen()
         except Exception as exc:
             self.set_status(f"Erreur: {exc}")
+
+    def on_resize(self) -> None:
+        self.position_console_button()
+
+    def position_console_button(self) -> None:
+        try:
+            panel = self.query_one("#console_panel", Vertical)
+            btn = self.query_one("#console_fullscreen_btn", Button)
+            width = panel.size.width or 0
+            btn_w = btn.size.width or 5
+            x = max(1, width - btn_w - 2)
+            btn.styles.offset = (x, 1)
+        except Exception:
+            pass
+
+    def toggle_console_fullscreen(self) -> None:
+        self.console_fullscreen = not self.console_fullscreen
+        root = self.query_one("#root", Horizontal)
+        console_panel = self.query_one("#console_panel", Vertical)
+        btn = self.query_one("#console_fullscreen_btn", Button)
+        if self.console_fullscreen:
+            root.styles.display = "none"
+            console_panel.styles.height = "1fr"
+            btn.label = "EX"
+            self.position_console_button()
+            self.set_status("Console en plein ecran.")
+            return
+        root.styles.display = "block"
+        console_panel.styles.height = 14
+        btn.label = "FS"
+        self.position_console_button()
+        self.set_status("Retour vue normale.")
 
     def log_widget(self) -> Log:
         return self.query_one("#logs", Log)
 
     def selected_log_path(self) -> Path:
-        return LOG_ERR
+        return LOG_OUT
 
     def render_log_snapshot(self) -> None:
         log = self.log_widget()
-        path = self.selected_log_path()
         log.clear()
+        if not self.session_has_server_output:
+            return
+        path = self.selected_log_path()
         if not path.exists():
-            log.write_line("(fichier absent)")
             return
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-120:]
         for line in lines:
@@ -748,6 +813,8 @@ class LlamaLauncherApp(App):
 
     def tick_tail(self) -> None:
         if not self.logs_following:
+            return
+        if not self.session_has_server_output:
             return
         path = self.selected_log_path()
         log = self.log_widget()
@@ -765,8 +832,114 @@ class LlamaLauncherApp(App):
         for line in chunk.splitlines():
             log.write_line(line)
 
+    def bytes_to_gb(self, value: int) -> str:
+        gb = value / (1024 ** 3)
+        return f"{gb:.1f}GB"
+
+    def ram_usage_bytes(self) -> tuple[int, int]:
+        class MemoryStatusEx(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(MemoryStatusEx)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return (0, 0)
+        total = int(status.ullTotalPhys)
+        avail = int(status.ullAvailPhys)
+        used = max(0, total - avail)
+        return (used, total)
+
+    def process_ram_bytes(self, pid: int) -> int:
+        if pid <= 0:
+            return 0
+        try:
+            proc = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            out = (proc.stdout or "").strip()
+            if not out or "INFO:" in out.upper():
+                return 0
+            row = [x.strip('"') for x in out.split('","')]
+            if len(row) < 5:
+                return 0
+            mem_field = row[4].replace(",", "").replace(" ", "").replace("K", "").strip()
+            kb = int(mem_field) if mem_field.isdigit() else 0
+            return kb * 1024
+        except Exception:
+            return 0
+
+    def gpu_vram_info(self) -> tuple[int, int]:
+        # Global GPU VRAM usage across all processes.
+        try:
+            gpus = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=memory.used,memory.total",
+                    "--format=csv,noheader,nounits",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            lines = [ln.strip() for ln in (gpus.stdout or "").splitlines() if ln.strip()]
+            if not lines:
+                return (0, 0)
+
+            used_sum = 0
+            total_sum = 0
+            for line in lines:
+                parts = [x.strip() for x in line.split(",")]
+                if len(parts) < 2:
+                    continue
+                if parts[0].isdigit():
+                    used_sum += int(parts[0]) * 1024 * 1024
+                if parts[1].isdigit():
+                    total_sum += int(parts[1]) * 1024 * 1024
+
+            return (used_sum, total_sum)
+        except Exception:
+            return (0, 0)
+
+    def tick_monitoring(self) -> None:
+        mon = self.query_one("#monitoring", Static)
+
+        used_ram, total_ram = self.ram_usage_bytes()
+        ram_line = "RAM: N/A"
+        if total_ram > 0:
+            ram_line = f"RAM: {self.bytes_to_gb(used_ram)}/{self.bytes_to_gb(total_ram)}"
+
+        used_vram, total_vram = self.gpu_vram_info()
+        vram_line = "VRAM: N/A"
+        if total_vram > 0:
+            vram_line = f"VRAM: {self.bytes_to_gb(used_vram)}/{self.bytes_to_gb(total_vram)}"
+
+        mon.update(f"{ram_line}\n{vram_line}")
+
     def launch_server(self) -> None:
         ensure_state()
+        existing_pid = pid_value()
+        if existing_pid > 0 and is_process_running(existing_pid):
+            self.set_status(f"llama-server deja en cours (PID {existing_pid}). Stop avant relance.")
+            return
+        if existing_pid > 0 and PID_FILE.exists():
+            PID_FILE.unlink()
         cmd = self.build_command()
         self.global_settings.llama_server_path = self.query_one("#g_server", Input).value.strip()
         save_profiles(self.profiles)
@@ -775,23 +948,30 @@ class LlamaLauncherApp(App):
             LOG_OUT.unlink()
         if LOG_ERR.exists():
             LOG_ERR.unlink()
-        with LOG_OUT.open("w", encoding="utf-8") as out, LOG_ERR.open("w", encoding="utf-8") as err:
+        with LOG_OUT.open("w", encoding="utf-8") as out:
             p = subprocess.Popen(
                 cmd,
                 stdout=out,
-                stderr=err,
+                stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 creationflags=0x08000000 | 0x00000200,
                 cwd=str(APP_DIR),
             )
         PID_FILE.write_text(str(p.pid), encoding="utf-8")
+        self.session_has_server_output = True
         self._last_log_size = 0
+        self.log_widget().clear()
         self.set_status(f"Lance PID {p.pid}")
 
     def stop_server(self) -> None:
         pid = pid_value()
         if pid <= 0:
             self.set_status("Aucun PID enregistre.")
+            return
+        if not is_process_running(pid):
+            if PID_FILE.exists():
+                PID_FILE.unlink()
+            self.set_status("PID obsolete nettoye (processus deja arrete).")
             return
         subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if PID_FILE.exists():
