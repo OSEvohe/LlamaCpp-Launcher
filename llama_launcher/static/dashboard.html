@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLama Launcher Dashboard</title>
+<style>
+/* ---- reset & base ---- */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  background:#0d1117;color:#c9d1d9;line-height:1.5;font-size:14px}
+a{color:#58a6ff;text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* ---- layout ---- */
+.app{max-width:1100px;margin:0 auto;padding:16px}
+.header{display:flex;align-items:center;justify-content:space-between;padding:8px 0 16px;
+  border-bottom:1px solid #30363d;margin-bottom:16px}
+.header h1{font-size:20px;font-weight:600;color:#f0f6fc}
+.badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600}
+.badge.green{background:#238636;color:#fff}
+.badge.red{background:#da3633;color:#fff}
+.badge.gray{background:#30363d;color:#8b949e}
+
+/* ---- tabs ---- */
+.tabs{display:flex;gap:0;border-bottom:1px solid #30363d;margin-bottom:16px;flex-wrap:wrap}
+.tab-btn{padding:8px 16px;background:none;border:none;color:#8b949e;cursor:pointer;
+  font-size:13px;border-bottom:2px solid transparent;transition:color .15s}
+.tab-btn:hover{color:#c9d1d9}
+.tab-btn.active{color:#f0f6fc;border-bottom-color:#f78166}
+.tab-panel{display:none}
+.tab-panel.active{display:block}
+
+/* ---- cards ---- */
+.card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:16px;margin-bottom:12px}
+.card h2{font-size:15px;font-weight:600;color:#f0f6fc;margin-bottom:12px}
+.card h3{font-size:13px;font-weight:600;color:#8b949e;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px}
+
+/* ---- grid ---- */
+.grid{display:grid;gap:12px}
+.grid-2{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+.grid-3{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+.grid-4{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+
+/* ---- stat boxes ---- */
+.stat{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:12px;text-align:center}
+.stat .label{font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px}
+.stat .value{font-size:22px;font-weight:700;color:#f0f6fc;margin-top:4px}
+
+/* ---- form ---- */
+label{display:block;font-size:12px;color:#8b949e;margin-bottom:2px}
+input,select,textarea{width:100%;padding:6px 10px;background:#0d1117;border:1px solid #30363d;
+  border-radius:4px;color:#c9d1d9;font-size:13px;font-family:inherit}
+input:focus,select:focus,textarea:focus{outline:none;border-color:#58a6ff}
+textarea{resize:vertical;min-height:60px}
+.form-row{margin-bottom:10px}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+
+/* ---- buttons ---- */
+.btn{display:inline-flex;align-items:center;gap:4px;padding:6px 14px;border:1px solid #30363d;
+  border-radius:6px;background:#21262d;color:#c9d1d9;font-size:13px;cursor:pointer;
+  transition:background .15s}
+.btn:hover{background:#30363d}
+.btn.primary{background:#238636;border-color:#238636;color:#fff}
+.btn.primary:hover{background:#2ea043}
+.btn.danger{background:#da3633;border-color:#da3633;color:#fff}
+.btn.danger:hover{background:#f85149}
+.btn.small{padding:4px 10px;font-size:12px}
+.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+
+/* ---- table ---- */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:6px 10px;border-bottom:1px solid #21262d}
+th{color:#8b949e;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+tr:hover td{background:#161b22}
+
+/* ---- logs ---- */
+.log-box{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:12px;
+  font-family:"Cascadia Code","Fira Code",monospace;font-size:12px;max-height:400px;
+  overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:#8b949e;line-height:1.6}
+
+/* ---- profile selector ---- */
+.profile-list{list-style:none}
+.profile-list li{padding:8px 12px;border:1px solid #30363d;border-radius:4px;margin-bottom:6px;
+  cursor:pointer;display:flex;justify-content:space-between;align-items:center;transition:border-color .15s}
+.profile-list li:hover,.profile-list li.selected{border-color:#58a6ff;background:#161b22}
+.profile-list li .pname{font-weight:600;color:#f0f6fc}
+.profile-list li .pmodel{font-size:12px;color:#8b949e}
+
+/* ---- misc ---- */
+.mt-8{margin-top:8px}
+.mt-12{margin-top:12px}
+.mt-16{margin-top:16px}
+.mb-8{margin-bottom:8px}
+.text-sm{font-size:12px;color:#8b949e}
+.text-center{text-align:center}
+.loading{color:#58a6ff;font-style:italic}
+.error-msg{color:#f85149;font-size:12px;margin-top:4px}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+
+  <!-- Header -->
+  <div class="header">
+    <h1>LLama Launcher</h1>
+    <span id="statusBadge" class="badge gray">checking...</span>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs" id="tabs">
+    <button class="tab-btn active" data-tab="monitoring">Monitoring</button>
+    <button class="tab-btn" data-tab="controls">Controls</button>
+    <button class="tab-btn" data-tab="profiles">Profiles</button>
+    <button class="tab-btn" data-tab="settings">Settings</button>
+    <button class="tab-btn" data-tab="logs">Logs</button>
+    <button class="tab-btn" data-tab="models">Models</button>
+  </div>
+
+  <!-- ==================== MONITORING ==================== -->
+  <div class="tab-panel active" id="panel-monitoring">
+    <div class="card">
+      <h2>System Monitoring</h2>
+      <div class="grid grid-4" id="monGrid">
+        <div class="stat"><div class="label">RAM Used</div><div class="value" id="monRamUsed">&mdash;</div></div>
+        <div class="stat"><div class="label">RAM Total</div><div class="value" id="monRamTotal">&mdash;</div></div>
+        <div class="stat"><div class="label">VRAM Used</div><div class="value" id="monVramUsed">&mdash;</div></div>
+        <div class="stat"><div class="label">VRAM Total</div><div class="value" id="monVramTotal">&mdash;</div></div>
+      </div>
+      <div class="grid grid-3 mt-12">
+        <div class="stat"><div class="label">Process RAM</div><div class="value" id="monProcessRam">&mdash;</div></div>
+        <div class="stat"><div class="label">PID</div><div class="value" id="monPid">&mdash;</div></div>
+        <div class="stat"><div class="label">Status</div><div class="value" id="monStatus">&mdash;</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== CONTROLS ==================== -->
+  <div class="tab-panel" id="panel-controls">
+    <div class="card">
+      <h2>Server Controls</h2>
+      <div class="form-row">
+        <label>Profile Index</label>
+        <select id="ctrlProfileIdx"><option value="0">0</option></select>
+      </div>
+      <div class="form-row">
+        <label>llama-server.exe Path (optional override)</label>
+        <input id="ctrlExePath" type="text" placeholder="leave blank to use settings value">
+      </div>
+      <div class="btn-group">
+        <button class="btn primary" onclick="doLaunch()">&#9654; Launch</button>
+        <button class="btn danger" onclick="doStop()">&#9632; Stop</button>
+        <button class="btn" onclick="doRestart()">&#8635; Restart</button>
+      </div>
+      <div id="ctrlResult" class="mt-8 text-sm"></div>
+    </div>
+  </div>
+
+  <!-- ==================== PROFILES ==================== -->
+  <div class="tab-panel" id="panel-profiles">
+    <div class="grid grid-2">
+      <!-- list -->
+      <div class="card">
+        <h2>Profiles</h2>
+        <ul class="profile-list" id="profileList"></ul>
+        <div class="btn-group">
+          <button class="btn primary small" onclick="doAddProfile()">&#43; Add Profile</button>
+        </div>
+      </div>
+      <!-- editor -->
+      <div class="card" id="profileEditor" style="display:none">
+        <h2>Edit Profile</h2>
+        <input type="hidden" id="peIndex">
+        <div class="form-grid">
+          <div class="form-row"><label>Name</label><input id="peName" type="text"></div>
+          <div class="form-row"><label>Model Path</label><input id="peModelPath" type="text"></div>
+        </div>
+        <div class="form-grid">
+          <div class="form-row"><label>Host</label><input id="peHost" type="text"></div>
+          <div class="form-row"><label>Port</label><input id="pePort" type="number"></div>
+        </div>
+        <div class="form-grid">
+          <div class="form-row"><label>Context Size</label><input id="peCtxSize" type="number"></div>
+          <div class="form-row"><label>Threads</label><input id="peThreads" type="number"></div>
+        </div>
+        <div class="form-grid">
+          <div class="form-row"><label>GPU Layers</label><input id="peGpuLayers" type="number"></div>
+          <div class="form-row"><label>Temperature</label><input id="peTemp" type="number" step="0.01"></div>
+        </div>
+        <div class="form-grid">
+          <div class="form-row"><label>Top P</label><input id="peTopP" type="number" step="0.01"></div>
+          <div class="form-row"><label>Batch Size</label><input id="peBatchSize" type="number"></div>
+        </div>
+        <div class="form-row"><label>Flash Attention</label>
+          <select id="peFlashAttn"><option value="off">off</option><option value="on">on</option><option value="imma">imma</option></select>
+        </div>
+        <div class="form-row"><label>KV Cache Type</label>
+          <select id="peKvCache"><option value="f16">f16</option><option value="q8_0">q8_0</option><option value="q4_0">q4_0</option></select>
+        </div>
+        <div class="form-row"><label>Extra Args</label><input id="peExtraArgs" type="text"></div>
+        <div class="btn-group">
+          <button class="btn primary" onclick="doSaveProfile()">Save</button>
+          <button class="btn danger small" onclick="doDeleteProfile()">Delete</button>
+          <button class="btn small" onclick="document.getElementById('profileEditor').style.display='none'">Cancel</button>
+        </div>
+        <div id="peResult" class="mt-8 text-sm"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== SETTINGS ==================== -->
+  <div class="tab-panel" id="panel-settings">
+    <div class="card">
+      <h2>Global Settings</h2>
+      <div class="form-row">
+        <label>llama-server.exe Path</label>
+        <input id="gsLlamaPath" type="text">
+      </div>
+      <div class="form-row">
+        <label>Model Directories (comma-separated)</label>
+        <input id="gsModelDirs" type="text">
+      </div>
+      <div class="form-grid">
+        <div class="form-row"><label>API Host</label><input id="gsApiHost" type="text"></div>
+        <div class="form-row"><label>API Port</label><input id="gsApiPort" type="number"></div>
+      </div>
+      <p class="text-sm mt-8">Host / Port changes apply on next launcher restart (or API restart), not immediately.</p>
+      <div class="btn-group">
+        <button class="btn primary" onclick="doSaveSettings()">Save Settings</button>
+      </div>
+      <div id="gsResult" class="mt-8 text-sm"></div>
+    </div>
+  </div>
+
+  <!-- ==================== LOGS ==================== -->
+  <div class="tab-panel" id="panel-logs">
+    <div class="card">
+      <h2>Server Logs</h2>
+      <div class="btn-group mb-8">
+        <button class="btn small" onclick="doClearLogs()">Clear</button>
+        <button class="btn small" id="logsToggleBtn" onclick="toggleLogPolling()">Pause</button>
+      </div>
+      <div class="log-box" id="logBox">Waiting for logs...</div>
+    </div>
+  </div>
+
+  <!-- ==================== MODELS ==================== -->
+  <div class="tab-panel" id="panel-models">
+    <div class="card">
+      <h2>Discovered Models</h2>
+      <div class="btn-group mb-8">
+        <button class="btn small" onclick="doRefreshModels()">&#8635; Refresh</button>
+      </div>
+      <div id="modelsList" class="text-sm">Click Refresh to scan for .gguf models.</div>
+    </div>
+  </div>
+
+</div><!-- /app -->
+
+<script>
+/* ================================================================
+   LLama Launcher Dashboard - vanilla JS, no dependencies
+   ================================================================ */
+
+// ---- helpers ----
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, opts);
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`HTTP ${res.status}: ${txt}`);
+  }
+  return res.json();
+}
+
+function show(el, msg, isError) {
+  el.textContent = msg;
+  el.className = "mt-8 text-sm" + (isError ? " error-msg" : "");
+}
+
+// ---- tabs ----
+$$('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    $$('.tab-btn').forEach(b => b.classList.remove('active'));
+    $$('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    const tab = btn.dataset.tab;
+    $(`#panel-${tab}`).classList.add('active');
+    // lazy-load data on first tab visit
+    if (tab === 'monitoring') fetchMonitoring();
+    if (tab === 'profiles') fetchProfiles();
+    if (tab === 'settings') fetchSettings();
+    if (tab === 'logs' && !logPollingActive) { startLogPolling(); }
+    if (tab === 'models') fetchModels();
+    if (tab === 'controls') refreshControlProfileIdx();
+  });
+});
+
+// ---- status badge ----
+async function updateStatusBadge() {
+  try {
+    const d = await api('/api/status');
+    const badge = $('#statusBadge');
+    if (d.running) {
+      badge.textContent = `Running (PID ${d.pid})`;
+      badge.className = 'badge green';
+    } else {
+      badge.textContent = 'Stopped';
+      badge.className = 'badge red';
+    }
+  } catch (e) {
+    $('#statusBadge').textContent = 'API unreachable';
+    $('#statusBadge').className = 'badge red';
+  }
+}
+
+// ---- monitoring ----
+async function fetchMonitoring() {
+  try {
+    const d = await api('/api/monitoring');
+    $('#monRamUsed').textContent = d.ram.used_human || '0 B';
+    $('#monRamTotal').textContent = d.ram.total_human || '0 B';
+    $('#monVramUsed').textContent = d.vram.used_human || '0 B';
+    $('#monVramTotal').textContent = d.vram.total_human || '0 B';
+    $('#monProcessRam').textContent = d.process_ram_human || '0 B';
+    $('#monPid').textContent = d.pid != null ? d.pid : '—';
+    $('#monStatus').textContent = d.running ? 'Running' : 'Stopped';
+    $('#monStatus').style.color = d.running ? '#3fb950' : '#f85149';
+  } catch (e) {
+    $('#monRamUsed').textContent = 'err';
+  }
+}
+
+// ---- controls ----
+function refreshControlProfileIdx() {
+  const sel = $('#ctrlProfileIdx');
+  const val = sel.value;
+  api('/api/profiles').then(profiles => {
+    sel.innerHTML = '';
+    profiles.forEach((p, i) => {
+      const opt = document.createElement('option');
+      opt.value = i;
+      opt.textContent = `${i}: ${p.name || 'unnamed'}`;
+      sel.appendChild(opt);
+    });
+    if (sel.querySelector(`option[value="${val}"]`)) sel.value = val;
+  }).catch(() => {});
+}
+
+async function doLaunch() {
+  const el = $('#ctrlResult');
+  el.textContent = '';
+  try {
+    const body = {
+      profile_index: parseInt($('#ctrlProfileIdx').value, 10),
+      exe_path: $('#ctrlExePath').value.trim() || undefined
+    };
+    const d = await api('/api/launch', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    show(el, `Launched PID ${d.pid}`, false);
+    updateStatusBadge();
+    fetchMonitoring();
+  } catch (e) { show(el, e.message, true); }
+}
+
+async function doStop() {
+  const el = $('#ctrlResult');
+  el.textContent = '';
+  try {
+    const d = await api('/api/stop', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+    show(el, d.stopped ? `Stopped PID ${d.pid}` : 'Nothing to stop', false);
+    updateStatusBadge();
+    fetchMonitoring();
+  } catch (e) { show(el, e.message, true); }
+}
+
+async function doRestart() {
+  const el = $('#ctrlResult');
+  el.textContent = '';
+  try {
+    const body = {
+      profile_index: parseInt($('#ctrlProfileIdx').value, 10),
+      exe_path: $('#ctrlExePath').value.trim() || undefined
+    };
+    const d = await api('/api/restart', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    show(el, `Restarted PID ${d.pid}`, false);
+    updateStatusBadge();
+    fetchMonitoring();
+  } catch (e) { show(el, e.message, true); }
+}
+
+// ---- profiles ----
+let _profilesCache = [];
+
+async function fetchProfiles() {
+  try {
+    _profilesCache = await api('/api/profiles');
+    const ul = $('#profileList');
+    ul.innerHTML = '';
+    _profilesCache.forEach((p, i) => {
+      const li = document.createElement('li');
+      li.innerHTML = `<span><span class="pname">${esc(p.name)}</span> <span class="pmodel">${esc(p.model_path || 'no model')}</span></span>
+        <span class="text-sm">${i}</span>`;
+      li.addEventListener('click', () => openProfileEditor(i));
+      ul.appendChild(li);
+    });
+  } catch (e) {
+    $('#profileList').innerHTML = `<li class="error-msg">${esc(e.message)}</li>`;
+  }
+}
+
+function openProfileEditor(index) {
+  const p = _profilesCache[index];
+  if (!p) return;
+  $('#profileEditor').style.display = 'block';
+  $('#peIndex').value = index;
+  $('#peName').value = p.name || '';
+  $('#peModelPath').value = p.model_path || '';
+  $('#peHost').value = p.host || '127.0.0.1';
+  $('#pePort').value = p.port ?? 8080;
+  $('#peCtxSize').value = p.ctx_size ?? 4096;
+  $('#peThreads').value = p.threads ?? 8;
+  $('#peGpuLayers').value = p.n_gpu_layers ?? 0;
+  $('#peTemp').value = p.temp ?? 0.7;
+  $('#peTopP').value = p.top_p ?? 0.95;
+  $('#peBatchSize').value = p.batch_size ?? 512;
+  $('#peFlashAttn').value = p.flash_attn_mode || 'off';
+  $('#peKvCache').value = p.kv_cache_type || 'f16';
+  $('#peExtraArgs').value = p.extra_args || '';
+  $('#peResult').textContent = '';
+}
+
+async function doSaveProfile() {
+  const el = $('#peResult');
+  el.textContent = '';
+  const index = parseInt($('#peIndex').value, 10);
+  const body = {
+    name: $('#peName').value.trim() || 'unnamed',
+    model_path: $('#peModelPath').value.trim(),
+    host: $('#peHost').value.trim() || '127.0.0.1',
+    port: parseInt($('#pePort').value, 10) || 8080,
+    ctx_size: parseInt($('#peCtxSize').value, 10) || 4096,
+    threads: parseInt($('#peThreads').value, 10) || 8,
+    n_gpu_layers: parseInt($('#peGpuLayers').value, 10) || 0,
+    temp: parseFloat($('#peTemp').value) || 0.7,
+    top_p: parseFloat($('#peTopP').value) || 0.95,
+    batch_size: parseInt($('#peBatchSize').value, 10) || 512,
+    flash_attn_mode: $('#peFlashAttn').value,
+    kv_cache_type: $('#peKvCache').value,
+    extra_args: $('#peExtraArgs').value.trim(),
+  };
+  try {
+    await api(`/api/profiles/${index}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    show(el, 'Profile saved', false);
+    fetchProfiles();
+  } catch (e) { show(el, e.message, true); }
+}
+
+async function doDeleteProfile() {
+  const index = parseInt($('#peIndex').value, 10);
+  if (!confirm(`Delete profile #${index}?`)) return;
+  try {
+    await api(`/api/profiles/${index}`, { method: 'DELETE' });
+    $('#profileEditor').style.display = 'none';
+    fetchProfiles();
+  } catch (e) { show($('#peResult'), e.message, true); }
+}
+
+async function doAddProfile() {
+  try {
+    const name = prompt('Profile name:', `profile_${Date.now()}`);
+    if (!name) return;
+    await api('/api/profiles', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name }) });
+    fetchProfiles();
+  } catch (e) { alert(e.message); }
+}
+
+// ---- settings ----
+async function fetchSettings() {
+  try {
+    const d = await api('/api/settings');
+    $('#gsLlamaPath').value = d.llama_server_path || '';
+    $('#gsModelDirs').value = (d.model_dirs || []).join(', ');
+    $('#gsApiHost').value = d.api_host || '127.0.0.1';
+    $('#gsApiPort').value = d.api_port || 0;
+  } catch (e) {
+    show($('#gsResult'), e.message, true);
+  }
+}
+
+async function doSaveSettings() {
+  const el = $('#gsResult');
+  el.textContent = '';
+  const body = {
+    llama_server_path: $('#gsLlamaPath').value.trim(),
+    model_dirs: $('#gsModelDirs').value.split(',').map(s => s.trim()).filter(Boolean),
+    api_host: $('#gsApiHost').value.trim() || '127.0.0.1',
+    api_port: parseInt($('#gsApiPort').value, 10) || 0,
+  };
+  try {
+    await api('/api/settings', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    show(el, 'Settings saved', false);
+  } catch (e) { show(el, e.message, true); }
+}
+
+// ---- logs ----
+let logLastSize = 0;
+let logLastMarker = '';
+let logPollingActive = false;
+let logPollTimer = null;
+
+async function fetchLogs() {
+  const qs = new URLSearchParams();
+  if (logLastSize) qs.set('last_size', logLastSize);
+  if (logLastMarker) qs.set('last_marker', logLastMarker);
+  try {
+    const d = await api(`/api/logs?${qs}`);
+    const box = $('#logBox');
+    if (d.reset) {
+      box.textContent = '';
+      logLastSize = 0;
+      logLastMarker = '';
+    }
+    if (d.chunk) {
+      box.textContent += d.chunk;
+      box.scrollTop = box.scrollHeight;
+    }
+    logLastSize = d.last_size;
+    logLastMarker = d.last_marker;
+  } catch (_e) { /* silent on log fetch errors */ }
+}
+
+function startLogPolling() {
+  if (logPollingActive) return;
+  logPollingActive = true;
+  $('#logsToggleBtn').textContent = 'Pause';
+  fetchLogs();
+  logPollTimer = setInterval(fetchLogs, 2000);
+}
+
+function stopLogPolling() {
+  logPollingActive = false;
+  $('#logsToggleBtn').textContent = 'Resume';
+  if (logPollTimer) { clearInterval(logPollTimer); logPollTimer = null; }
+}
+
+function toggleLogPolling() {
+  if (logPollingActive) stopLogPolling();
+  else startLogPolling();
+}
+
+function doClearLogs() {
+  $('#logBox').textContent = '';
+  logLastSize = 0;
+  logLastMarker = '';
+}
+
+// ---- models ----
+async function fetchModels() {
+  const el = $('#modelsList');
+  el.innerHTML = '<span class="loading">Scanning...</span>';
+  try {
+    const d = await api('/api/models');
+    const models = d.models || [];
+    if (!models.length) {
+      el.innerHTML = '<span class="text-sm">No .gguf models found. Add directories in Settings.</span>';
+      return;
+    }
+    let html = '<table><thead><tr><th>#</th><th>Model Path</th></tr></thead><tbody>';
+    models.forEach((m, i) => {
+      html += `<tr><td>${i + 1}</td><td>${esc(m)}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = `<span class="error-msg">${esc(e.message)}</span>`;
+  }
+}
+
+function doRefreshModels() { fetchModels(); }
+
+// ---- util ----
+function esc(s) {
+  if (s == null) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+// ---- boot ----
+updateStatusBadge();
+setInterval(updateStatusBadge, 5000);
+setInterval(fetchMonitoring, 8000);
+fetchMonitoring();
+</script>
+</body>
+</html>
