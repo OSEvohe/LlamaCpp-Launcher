@@ -1,8 +1,9 @@
 """Service facade for LLama Launcher core operations."""
 import json
+import threading
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from llama_launcher import command as cmd_module
 from llama_launcher import discovery
@@ -20,6 +21,20 @@ from llama_launcher.models import GlobalSettings, LlamaOption, Profile
 from llama_launcher.options import load_options_from_exe, resolve_llama_server_path
 
 
+def _safe_int(value, default: int = 0) -> int:
+    """Return *value* as int only if it is a genuine int (not bool)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return value
+
+
+def _safe_str(value, default: str = "") -> str:
+    """Return *value* as str only if it is a genuine str."""
+    if not isinstance(value, str):
+        return default
+    return value
+
+
 class LlamaLauncherService:
     """Facade encapsulating all core LLama Launcher operations."""
 
@@ -33,6 +48,7 @@ class LlamaLauncherService:
         self._log_err = self._state_dir / "llama-server.err.log"
         self._last_log_size = 0
         self._last_log_marker = ""
+        self._lock = threading.RLock()
 
     # -- internal helpers --------------------------------------------------
 
@@ -48,6 +64,8 @@ class LlamaLauncherService:
             return GlobalSettings(
                 llama_server_path=data.get("llama_server_path", ""),
                 model_dirs=data.get("model_dirs", []),
+                api_host=_safe_str(data.get("api_host"), "127.0.0.1"),
+                api_port=_safe_int(data.get("api_port"), 0),
             )
         except Exception:
             return GlobalSettings()
@@ -87,43 +105,94 @@ class LlamaLauncherService:
     # -- profiles ----------------------------------------------------------
 
     def load_profiles(self) -> List[Profile]:
-        if self._app_dir is APP_DIR:
-            return _config_load_profiles()
-        return self._load_profiles_path()
+        with self._lock:
+            if self._app_dir is APP_DIR:
+                return _config_load_profiles()
+            return self._load_profiles_path()
 
     def save_profiles(self, profiles: List[Profile]) -> None:
-        if self._app_dir is APP_DIR:
-            _config_save_profiles(profiles)
-        else:
-            self._save_profiles_path(profiles)
+        with self._lock:
+            if self._app_dir is APP_DIR:
+                _config_save_profiles(profiles)
+            else:
+                self._save_profiles_path(profiles)
 
     def add_profile(self, name: str) -> Profile:
-        profiles = self.load_profiles()
-        profile = Profile(name=name)
-        profiles.append(profile)
-        self.save_profiles(profiles)
-        return profile
-
-    def delete_profile(self, index: int) -> None:
-        profiles = self.load_profiles()
-        if 0 <= index < len(profiles):
-            profiles.pop(index)
-            if not profiles:
-                profiles.append(Profile())
+        with self._lock:
+            profiles = self.load_profiles()
+            profile = Profile(name=name)
+            profiles.append(profile)
             self.save_profiles(profiles)
+            return profile
+
+    def delete_profile(self, index: int) -> bool:
+        with self._lock:
+            profiles = self.load_profiles()
+            if 0 <= index < len(profiles):
+                profiles.pop(index)
+                if not profiles:
+                    profiles.append(Profile())
+                self.save_profiles(profiles)
+                return True
+            return False
+
+    def update_profile(self, index: int, profile_data: Dict[str, Any]) -> Profile:
+        """Atomically read-modify-write a single profile under one lock."""
+        with self._lock:
+            profiles = self.load_profiles()
+            if not (0 <= index < len(profiles)):
+                raise IndexError(f"profile index {index} out of range")
+            existing = profiles[index]
+            updated = Profile(
+                name=profile_data.get("name", existing.name),
+                model_path=profile_data.get("model_path", existing.model_path),
+                host=profile_data.get("host", existing.host),
+                port=profile_data.get("port", existing.port),
+                ctx_size=profile_data.get("ctx_size", existing.ctx_size),
+                threads=profile_data.get("threads", existing.threads),
+                n_gpu_layers=profile_data.get("n_gpu_layers", existing.n_gpu_layers),
+                temp=profile_data.get("temp", existing.temp),
+                top_p=profile_data.get("top_p", existing.top_p),
+                batch_size=profile_data.get("batch_size", existing.batch_size),
+                embeddings=profile_data.get("embeddings", existing.embeddings),
+                flash_attn_mode=profile_data.get("flash_attn_mode", existing.flash_attn_mode),
+                kv_cache_type=profile_data.get("kv_cache_type", existing.kv_cache_type),
+                extra_args=profile_data.get("extra_args", existing.extra_args),
+                advanced_values=profile_data.get("advanced_values", existing.advanced_values),
+                advanced_modes=profile_data.get("advanced_modes", existing.advanced_modes),
+                advanced_favorites=profile_data.get("advanced_favorites", existing.advanced_favorites),
+            )
+            profiles[index] = updated
+            self.save_profiles(profiles)
+            return updated
 
     # -- global settings ---------------------------------------------------
 
     def load_global(self) -> GlobalSettings:
-        if self._app_dir is APP_DIR:
-            return _config_load_global()
-        return self._load_global_path()
+        with self._lock:
+            if self._app_dir is APP_DIR:
+                return _config_load_global()
+            return self._load_global_path()
 
     def save_global(self, settings: GlobalSettings) -> None:
-        if self._app_dir is APP_DIR:
-            _config_save_global(settings)
-        else:
-            self._save_global_path(settings)
+        with self._lock:
+            if self._app_dir is APP_DIR:
+                _config_save_global(settings)
+            else:
+                self._save_global_path(settings)
+
+    def update_global(self, settings_data: Dict[str, Any]) -> GlobalSettings:
+        """Atomically read-modify-write global settings under one lock."""
+        with self._lock:
+            current = self.load_global()
+            settings = GlobalSettings(
+                llama_server_path=settings_data.get("llama_server_path", current.llama_server_path),
+                model_dirs=settings_data.get("model_dirs", current.model_dirs),
+                api_host=settings_data.get("api_host", current.api_host),
+                api_port=settings_data.get("api_port", current.api_port),
+            )
+            self.save_global(settings)
+            return settings
 
     # -- options -----------------------------------------------------------
 
@@ -161,38 +230,50 @@ class LlamaLauncherService:
         return (process.is_process_running(pid), pid)
 
     def launch(self, cmd: list, exe_path: str = "") -> int:
-        self._ensure_state()
-        existing_pid = process.read_pid(self._pid_file)
-        if existing_pid > 0 and process.is_process_running(existing_pid):
-            raise RuntimeError(f"llama-server deja en cours (PID {existing_pid}). Stop avant relance.")
-        if existing_pid > 0 and self._pid_file.exists():
-            self._pid_file.unlink()
-        self._last_log_size = 0
-        self._last_log_marker = ""
-        if self._log_out.exists():
-            self._log_out.unlink()
-        if self._log_err.exists():
-            self._log_err.unlink()
-        child_pid = process.start_server(cmd, self._log_out, self._app_dir)
-        self._pid_file.write_text(str(child_pid), encoding="utf-8")
-        if exe_path:
-            settings = self.load_global()
-            settings.llama_server_path = exe_path.strip()
-            self.save_global(settings)
-        return child_pid
+        with self._lock:
+            self._ensure_state()
+            existing_pid = process.read_pid(self._pid_file)
+            if existing_pid > 0 and process.is_process_running(existing_pid):
+                raise RuntimeError(f"llama-server deja en cours (PID {existing_pid}). Stop avant relance.")
+            if existing_pid > 0 and self._pid_file.exists():
+                self._pid_file.unlink()
+            self._last_log_size = 0
+            self._last_log_marker = ""
+            if self._log_out.exists():
+                self._log_out.unlink()
+            if self._log_err.exists():
+                self._log_err.unlink()
+            child_pid = process.start_server(cmd, self._log_out, self._app_dir)
+            self._pid_file.write_text(str(child_pid), encoding="utf-8")
+            if exe_path:
+                settings = self.load_global()
+                settings.llama_server_path = exe_path.strip()
+                self.save_global(settings)
+            return child_pid
 
     def stop(self) -> int:
-        pid = process.read_pid(self._pid_file)
-        if pid <= 0:
-            return 0
-        if not process.is_process_running(pid):
+        with self._lock:
+            pid = process.read_pid(self._pid_file)
+            if pid <= 0:
+                return 0
+            if not process.is_process_running(pid):
+                if self._pid_file.exists():
+                    self._pid_file.unlink()
+                return 0
+            process.stop_server(pid)
             if self._pid_file.exists():
                 self._pid_file.unlink()
-            return 0
-        process.stop_server(pid)
-        if self._pid_file.exists():
-            self._pid_file.unlink()
-        return pid
+            return pid
+
+    def restart(self, cmd: list, exe_path: str = "") -> int:
+        """Atomically stop any running server and launch a new one.
+
+        Both stop and launch execute under a single lock boundary so that
+        concurrent launch/stop/restart calls cannot interleave.
+        """
+        with self._lock:
+            self.stop()
+            return self.launch(cmd, exe_path=exe_path)
 
     # -- monitoring --------------------------------------------------------
 

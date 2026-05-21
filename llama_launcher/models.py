@@ -18,6 +18,8 @@ class LlamaOption:
 class GlobalSettings:
     llama_server_path: str = ""
     model_dirs: List[str] = None
+    api_host: str = "127.0.0.1"
+    api_port: int = 0
 
     def __post_init__(self) -> None:
         if self.model_dirs is None:

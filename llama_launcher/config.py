@@ -21,6 +21,20 @@ def ensure_state() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _safe_int(value, default: int = 0) -> int:
+    """Return *value* as int only if it is a genuine int (not bool)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default
+    return value
+
+
+def _safe_str(value, default: str = "") -> str:
+    """Return *value* as str only if it is a genuine str."""
+    if not isinstance(value, str):
+        return default
+    return value
+
+
 def load_global() -> GlobalSettings:
     ensure_state()
     if not GLOBAL_FILE.exists():
@@ -30,6 +44,8 @@ def load_global() -> GlobalSettings:
         return GlobalSettings(
             llama_server_path=data.get("llama_server_path", ""),
             model_dirs=data.get("model_dirs", []),
+            api_host=_safe_str(data.get("api_host"), "127.0.0.1"),
+            api_port=_safe_int(data.get("api_port"), 0),
         )
     except Exception:
         return GlobalSettings()
