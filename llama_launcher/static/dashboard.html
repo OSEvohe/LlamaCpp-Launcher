@@ -96,6 +96,19 @@ tr:hover td{background:#161b22}
 .text-center{text-align:center}
 .loading{color:#58a6ff;font-style:italic}
 .error-msg{color:#f85149;font-size:12px;margin-top:4px}
+
+/* ---- advanced panel ---- */
+.adv-scroll{max-height:340px;overflow-y:auto;border:1px solid #30363d;border-radius:4px;padding:6px 0}
+.adv-option-row{display:flex;align-items:center;gap:8px;padding:4px 10px;font-size:13px;cursor:pointer;transition:background .15s}
+.adv-option-row:hover{background:#161b22}
+.adv-option-row .adv-key{font-weight:600;color:#f0f6fc;min-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.adv-option-row .adv-desc{color:#8b949e;font-size:12px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.adv-option-row .fav-star{color:#30363d;font-size:16px;min-width:20px;text-align:center;transition:color .15s}
+.adv-option-row .fav-star.active{color:#d29922}
+.adv-fav-editor{border-top:1px solid #30363d;padding-top:12px;margin-top:12px}
+.adv-fav-row{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.adv-fav-row label{min-width:180px;font-size:12px;color:#8b949e;text-align:right}
+.adv-empty{color:#8b949e;font-size:12px;padding:8px 10px;font-style:italic}
 </style>
 </head>
 <body>
@@ -115,6 +128,7 @@ tr:hover td{background:#161b22}
     <button class="tab-btn" data-tab="settings">Settings</button>
     <button class="tab-btn" data-tab="logs">Logs</button>
     <button class="tab-btn" data-tab="models">Models</button>
+    <button class="tab-btn" data-tab="advanced">Advanced</button>
   </div>
 
   <!-- ==================== MONITORING ==================== -->
@@ -255,6 +269,36 @@ tr:hover td{background:#161b22}
     </div>
   </div>
 
+  <!-- ==================== ADVANCED ==================== -->
+  <div class="tab-panel" id="panel-advanced">
+    <div class="card">
+      <h2>Advanced Options</h2>
+      <div class="form-row">
+        <label>Profile</label>
+        <select id="advProfileIdx"><option value="0">0</option></select>
+      </div>
+      <div class="form-row">
+        <label>Search options</label>
+        <input id="advSearch" type="text" placeholder="filter by key, alias, or description…">
+      </div>
+      <h3>Options</h3>
+      <div id="advOptionsList" class="adv-scroll">
+        <div class="adv-empty">No options loaded. Use Refresh below.</div>
+      </div>
+      <div class="btn-group mt-8">
+        <button class="btn small" onclick="doRefreshAdvanced()">&#8635; Refresh Options</button>
+      </div>
+      <div id="advFavEditor" class="adv-fav-editor" style="display:none">
+        <h3>Favorites Values</h3>
+        <div id="advFavRows"></div>
+        <div class="btn-group mt-8">
+          <button class="btn primary small" onclick="doSaveAdvFavorites()">Save Favorites</button>
+        </div>
+      </div>
+      <div id="advResult" class="mt-8 text-sm"></div>
+    </div>
+  </div>
+
 </div><!-- /app -->
 
 <script>
@@ -295,6 +339,7 @@ $$('.tab-btn').forEach(btn => {
     if (tab === 'logs' && !logPollingActive) { startLogPolling(); }
     if (tab === 'models') fetchModels();
     if (tab === 'controls') refreshControlProfileIdx();
+    if (tab === 'advanced') initAdvancedTab();
   });
 });
 
@@ -429,12 +474,14 @@ function openProfileEditor(index) {
   $('#peKvCache').value = p.kv_cache_type || 'f16';
   $('#peExtraArgs').value = p.extra_args || '';
   $('#peResult').textContent = '';
+  syncAdvProfileIdx(index, true);
 }
 
 async function doSaveProfile() {
   const el = $('#peResult');
   el.textContent = '';
   const index = parseInt($('#peIndex').value, 10);
+  const cachedProfile = _profilesCache[index];
   const body = {
     name: $('#peName').value.trim() || 'unnamed',
     model_path: $('#peModelPath').value.trim(),
@@ -450,10 +497,16 @@ async function doSaveProfile() {
     kv_cache_type: $('#peKvCache').value,
     extra_args: $('#peExtraArgs').value.trim(),
   };
+  if (cachedProfile) {
+    if (cachedProfile.advanced_favorites) body.advanced_favorites = cachedProfile.advanced_favorites;
+    if (cachedProfile.advanced_values) body.advanced_values = cachedProfile.advanced_values;
+  }
   try {
-    await api(`/api/profiles/${index}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const updated = await api(`/api/profiles/${index}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     show(el, 'Profile saved', false);
     fetchProfiles();
+    _profilesCache[index] = updated;
+    syncAdvProfileIdx(index);
   } catch (e) { show(el, e.message, true); }
 }
 
@@ -464,6 +517,7 @@ async function doDeleteProfile() {
     await api(`/api/profiles/${index}`, { method: 'DELETE' });
     $('#profileEditor').style.display = 'none';
     fetchProfiles();
+    syncAdvProfileIdx();
   } catch (e) { show($('#peResult'), e.message, true); }
 }
 
@@ -473,6 +527,7 @@ async function doAddProfile() {
     if (!name) return;
     await api('/api/profiles', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name }) });
     fetchProfiles();
+    syncAdvProfileIdx();
   } catch (e) { alert(e.message); }
 }
 
@@ -579,6 +634,322 @@ async function fetchModels() {
 }
 
 function doRefreshModels() { fetchModels(); }
+
+// ---- advanced options ----
+let _advOptionsMap = {};
+let _advOptionsList = [];
+let _advFavorites = [];
+let _advValues = {};
+let _advSearchHandler = null;
+let _advProfileHandler = null;
+let _advListHandler = null;
+let _advFavInputHandler = null;
+let _advPendingIdx = null;
+
+
+async function fetchAdvancedOptions() {
+  try {
+    const raw = await api('/api/options');
+    const map = {};
+    const list = [];
+    for (const [key, opt] of Object.entries(raw || {})) {
+      if (opt == null || typeof opt !== 'object') continue;
+      const entry = {
+        key: opt.key || key,
+        aliases: Array.isArray(opt.aliases) ? opt.aliases : [],
+        description: opt.description || '',
+        default: opt.default != null ? String(opt.default) : '',
+        arity: typeof opt.arity === 'number' ? opt.arity : 0,
+        positive_flag: opt.positive_flag || '',
+        negative_flag: opt.negative_flag || '',
+      };
+      map[key] = entry;
+      list.push(entry);
+    }
+    _advOptionsMap = map;
+    _advOptionsList = list;
+  } catch (_e) {
+    _advOptionsMap = {};
+    _advOptionsList = [];
+  }
+  loadAdvProfile();
+  renderAdvOptionsList();
+  renderAdvFavorites();
+}
+
+async function initAdvancedTab() {
+  const pending = _advPendingIdx;
+  const refreshPromise = refreshAdvProfileIdx();
+  if (!Object.keys(_advOptionsMap).length) {
+    fetchAdvancedOptions();
+  }
+  setupAdvHandlers();
+  if (pending != null) {
+    await refreshPromise;
+    const sel = $('#advProfileIdx');
+    if (sel.querySelector(`option[value="${pending}"]`)) {
+      sel.value = pending;
+      loadAdvProfile(false);
+      renderAdvOptionsList();
+      renderAdvFavorites();
+      _advPendingIdx = null;
+    }
+  }
+}
+
+function refreshAdvProfileIdx() {
+  const sel = $('#advProfileIdx');
+  const val = sel.value;
+  return api('/api/profiles').then(profiles => {
+    _profilesCache = profiles;
+    sel.innerHTML = '';
+    profiles.forEach((p, i) => {
+      const opt = document.createElement('option');
+      opt.value = i;
+      opt.textContent = `${i}: ${p.name || 'unnamed'}`;
+      sel.appendChild(opt);
+    });
+    if (sel.querySelector(`option[value="${val}"]`)) sel.value = val;
+    loadAdvProfile();
+    renderAdvOptionsList();
+    renderAdvFavorites();
+  }).catch(() => {});
+}
+
+function setupAdvHandlers() {
+  const searchInput = $('#advSearch');
+  const profileSel = $('#advProfileIdx');
+  const optionsList = $('#advOptionsList');
+  const favRows = $('#advFavRows');
+
+  // search filter (dedup)
+  if (_advSearchHandler) searchInput.removeEventListener('input', _advSearchHandler);
+  _advSearchHandler = () => renderAdvOptionsList();
+  searchInput.addEventListener('input', _advSearchHandler);
+
+  // profile change (dedup) — explicit switch: do NOT preserve prior draft
+  if (_advProfileHandler) profileSel.removeEventListener('change', _advProfileHandler);
+  _advProfileHandler = () => { loadAdvProfile(false); renderAdvOptionsList(); renderAdvFavorites(); };
+  profileSel.addEventListener('change', _advProfileHandler);
+
+  // star toggle via event delegation (dedup)
+  if (_advListHandler) optionsList.removeEventListener('click', _advListHandler);
+  _advListHandler = (e) => {
+    const star = e.target.closest('.fav-star');
+    if (!star) return;
+    const row = star.closest('.adv-option-row');
+    if (!row) return;
+    toggleAdvFavorite(row.dataset.key);
+  };
+  optionsList.addEventListener('click', _advListHandler);
+
+  // value input change via event delegation (dedup)
+  if (_advFavInputHandler) favRows.removeEventListener('input', _advFavInputHandler);
+  _advFavInputHandler = (e) => {
+    const input = e.target.closest('input[data-fav-key]');
+    if (!input) return;
+    _advValues[input.dataset.favKey] = input.value;
+  };
+  favRows.addEventListener('input', _advFavInputHandler);
+}
+
+function _advCanonicalKey(key) {
+  if (!key) return key;
+  if (_advOptionsMap[key]) return _advOptionsMap[key].key;
+  for (const opt of _advOptionsList) {
+    if (opt.aliases.includes(key)) return opt.key;
+  }
+  return key;
+}
+
+function _advResolveFavValue(rawKey) {
+  const canonical = _advCanonicalKey(rawKey);
+  const opt = _advOptionsList.find(o => o.key === canonical);
+  const allKeys = opt ? [canonical, ...opt.aliases] : [canonical, rawKey];
+  for (const k of allKeys) {
+    if (_advValues[k] !== undefined) return _advValues[k];
+  }
+  return _advValues[rawKey] !== undefined ? _advValues[rawKey] : '';
+}
+
+function loadAdvProfile(preserveDraft = true) {
+  const idx = parseInt($('#advProfileIdx').value, 10);
+  const profiles = _profilesCache || [];
+  const profile = profiles[idx] || {};
+
+  // snapshot current user state before overwrite
+  const snapValues = {..._advValues};
+  const snapFavs = [..._advFavorites];
+
+  const rawFavs = profile.advanced_favorites || [];
+  _advFavorites = [...new Set(rawFavs.map(k => _advCanonicalKey(k)))];
+  _advValues = {...(profile.advanced_values || {})};
+
+  // restore user edits only on async refresh / init (not on explicit profile switch)
+  if (preserveDraft) {
+    for (const fk of snapFavs) {
+      if (!_advFavorites.includes(fk)) {
+        _advFavorites.push(fk);
+        if (snapValues[fk] !== undefined) _advValues[fk] = snapValues[fk];
+      }
+    }
+    for (const [k, v] of Object.entries(snapValues)) {
+      if (!snapFavs.includes(k)) continue;
+      const profileVal = _advValues[k];
+      if (profileVal === undefined || profileVal === '') {
+        _advValues[k] = v;
+      }
+    }
+  }
+}
+
+function toggleAdvFavorite(key) {
+  const canonical = _advCanonicalKey(key);
+  const opt = _advOptionsList.find(o => o.key === canonical);
+  const allKeys = [canonical, ...(opt ? opt.aliases : [])];
+  const hadMatch = _advFavorites.some(fk => allKeys.includes(fk));
+  if (hadMatch) {
+    _advFavorites = _advFavorites.filter(fk => !allKeys.includes(fk));
+    for (const k of allKeys) delete _advValues[k];
+  } else {
+    _advFavorites.push(canonical);
+  }
+  renderAdvOptionsList();
+  renderAdvFavorites();
+}
+
+function renderAdvOptionsList() {
+  const container = $('#advOptionsList');
+  const query = ($('#advSearch').value || '').trim().toLowerCase();
+
+  let filtered = _advOptionsList;
+  if (query) {
+    filtered = _advOptionsList.filter(opt => {
+      return opt.key.toLowerCase().includes(query) ||
+        opt.aliases.some(a => a.toLowerCase().includes(query)) ||
+        opt.description.toLowerCase().includes(query);
+    });
+  }
+
+  if (!filtered.length) {
+    container.innerHTML = '<div class="adv-empty">' +
+      (_advOptionsList.length ? 'No options match your search.' : 'No options loaded. Use Refresh above.') +
+      '</div>';
+    return;
+  }
+
+  container.innerHTML = '';
+  filtered.forEach(opt => {
+    const allKeys = [opt.key, ...opt.aliases];
+    const isFav = _advFavorites.some(fk => allKeys.includes(fk));
+    const shortAlias = opt.aliases.find(a => a.startsWith('-') && !a.startsWith('--'));
+    const label = shortAlias ? `${shortAlias} / ${opt.key}` : opt.key;
+
+    const row = document.createElement('div');
+    row.className = 'adv-option-row';
+    row.dataset.key = opt.key;
+
+    const star = document.createElement('span');
+    star.className = 'fav-star' + (isFav ? ' active' : '');
+    star.title = 'Toggle favorite';
+    star.textContent = isFav ? '\u2605' : '\u2606';
+
+    const keySpan = document.createElement('span');
+    keySpan.className = 'adv-key';
+    keySpan.textContent = label;
+
+    const descSpan = document.createElement('span');
+    descSpan.className = 'adv-desc';
+    descSpan.textContent = opt.description;
+
+    row.appendChild(star);
+    row.appendChild(keySpan);
+    row.appendChild(descSpan);
+    container.appendChild(row);
+  });
+}
+
+function renderAdvFavorites() {
+  const editor = $('#advFavEditor');
+  const rows = $('#advFavRows');
+
+  if (!_advFavorites.length) {
+    editor.style.display = 'none';
+    rows.innerHTML = '';
+    return;
+  }
+
+  editor.style.display = 'block';
+  rows.innerHTML = '';
+  _advFavorites.forEach(rawKey => {
+    const canonical = _advCanonicalKey(rawKey);
+    const opt = _advOptionsList.find(o => o.key === canonical);
+    const val = _advResolveFavValue(rawKey);
+    const placeholder = opt ? 'default: ' + (opt.default || 'n/a') : 'value';
+
+    const row = document.createElement('div');
+    row.className = 'adv-fav-row';
+
+    const label = document.createElement('label');
+    label.textContent = rawKey;
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = val;
+    input.placeholder = placeholder;
+    input.dataset.favKey = canonical;
+
+    row.appendChild(label);
+    row.appendChild(input);
+    rows.appendChild(row);
+  });
+}
+
+function doRefreshAdvanced() {
+  refreshAdvProfileIdx();
+  fetchAdvancedOptions();
+}
+
+function syncAdvProfileIdx(hintIdx, forceReload) {
+  const sel = $('#advProfileIdx');
+  if (hintIdx == null) {
+    refreshAdvProfileIdx();
+    return;
+  }
+  const maxIdx = _profilesCache.length - 1;
+  const target = Math.min(hintIdx, Math.max(0, maxIdx));
+  if (!sel.querySelector(`option[value="${target}"]`)) {
+    _advPendingIdx = target;
+    return;
+  }
+  if (sel.value !== String(target) || forceReload) {
+    sel.value = target;
+    loadAdvProfile(false);
+    renderAdvOptionsList();
+    renderAdvFavorites();
+  }
+}
+
+async function doSaveAdvFavorites() {
+  const el = $('#advResult');
+  el.textContent = '';
+  const index = parseInt($('#advProfileIdx').value, 10);
+
+  const body = {
+    advanced_favorites: _advFavorites,
+    advanced_values: _advValues,
+  };
+
+  try {
+    const updated = await api(`/api/profiles/${index}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    _profilesCache[index] = updated;
+    // reload local draft from persisted values
+    _advFavorites = updated.advanced_favorites || [];
+    _advValues = updated.advanced_values || {};
+    renderAdvFavorites();
+    show(el, 'Favorites saved', false);
+  } catch (e) { show(el, e.message, true); }
+}
 
 // ---- util ----
 function esc(s) {
