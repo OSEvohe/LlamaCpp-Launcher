@@ -316,6 +316,88 @@ def test_put_profile_missing_body_400() -> None:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def test_put_profile_advanced_fields_200() -> None:
+    """PUT /api/profiles/0 with advanced_favorites + advanced_values returns 200."""
+    host, port, stop, server, thread, tmpdir = _make_server_with_profiles(
+        [Profile(name="original")]
+    )
+    try:
+        status, data = _request(
+            "PUT",
+            "/api/profiles/0",
+            host,
+            port,
+            body={
+                "advanced_favorites": ["--verbose", "--log-disable"],
+                "advanced_values": {"--verbose": "1", "--log-disable": ""},
+            },
+        )
+        assert status == 200
+        assert data["advanced_favorites"] == ["--verbose", "--log-disable"]
+        assert data["advanced_values"] == {"--verbose": "1", "--log-disable": ""}
+    finally:
+        stop.set()
+        server.server_close()
+        thread.join(timeout=2)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_get_profile_returns_advanced_fields() -> None:
+    """GET /api/profiles/0 returns previously saved advanced fields."""
+    host, port, stop, server, thread, tmpdir = _make_server_with_profiles(
+        [Profile(name="original")]
+    )
+    try:
+        _request(
+            "PUT",
+            "/api/profiles/0",
+            host,
+            port,
+            body={
+                "advanced_favorites": ["--flash-attn"],
+                "advanced_values": {"--flash-attn": "q2"},
+            },
+        )
+        status, data = _request("GET", "/api/profiles/0", host, port)
+        assert status == 200
+        assert data["advanced_favorites"] == ["--flash-attn"]
+        assert data["advanced_values"] == {"--flash-attn": "q2"}
+    finally:
+        stop.set()
+        server.server_close()
+        thread.join(timeout=2)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_put_profile_partial_preserves_unrelated_fields() -> None:
+    """Partial PUT with only advanced fields preserves unrelated profile fields."""
+    host, port, stop, server, thread, tmpdir = _make_server_with_profiles(
+        [Profile(name="keep-me", model_path="/models/m.gguf", ctx_size=8192)]
+    )
+    try:
+        status, data = _request(
+            "PUT",
+            "/api/profiles/0",
+            host,
+            port,
+            body={
+                "advanced_favorites": ["--temp"],
+                "advanced_values": {"--temp": "0.5"},
+            },
+        )
+        assert status == 200
+        assert data["name"] == "keep-me"
+        assert data["model_path"] == "/models/m.gguf"
+        assert data["ctx_size"] == 8192
+        assert data["advanced_favorites"] == ["--temp"]
+        assert data["advanced_values"] == {"--temp": "0.5"}
+    finally:
+        stop.set()
+        server.server_close()
+        thread.join(timeout=2)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 # ---------------------------------------------------------------------------
 # Tests: DELETE /api/profiles/:index
 # ---------------------------------------------------------------------------
@@ -527,6 +609,9 @@ if __name__ == "__main__":
         test_put_profile_200,
         test_put_profile_out_of_range_404,
         test_put_profile_missing_body_400,
+        test_put_profile_advanced_fields_200,
+        test_get_profile_returns_advanced_fields,
+        test_put_profile_partial_preserves_unrelated_fields,
         test_delete_profile_200,
         test_delete_profile_out_of_range_404,
         test_get_settings_200,
