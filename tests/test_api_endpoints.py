@@ -11,8 +11,9 @@ import tempfile
 import threading
 from pathlib import Path
 
+from llama_launcher import command as cmd_module
 from llama_launcher.api import LlamaLauncherService
-from llama_launcher.models import Profile
+from llama_launcher.models import LlamaOption, Profile
 from llama_launcher.server import create_api_server
 
 # ---------------------------------------------------------------------------
@@ -593,6 +594,313 @@ def test_unknown_route_404() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Tests: MTP field normalization on load
+# ---------------------------------------------------------------------------
+
+
+def _write_raw_profiles_json(app_dir: Path, profiles_data: list[dict]) -> None:
+    """Write raw JSON profiles directly to disk (bypassing Profile constructor)."""
+    state_dir = app_dir / ".launcher"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    payload = {"profiles": profiles_data}
+    (state_dir / "profiles.json").write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
+
+
+def test_load_profile_enable_mtp_string_true_normalized() -> None:
+    """Profile with enable_mtp='true' (string) loads as bool True."""
+    tmpdir = tempfile.mkdtemp()
+    app_dir = Path(tmpdir)
+    _write_raw_profiles_json(app_dir, [
+        {"name": "mtp-string", "enable_mtp": "true", "spec_draft_n_max": 2},
+    ])
+    svc = LlamaLauncherService(app_dir=app_dir)
+    profiles = svc.load_profiles()
+    assert len(profiles) == 1
+    assert profiles[0].enable_mtp is True
+    assert isinstance(profiles[0].enable_mtp, bool)
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_load_profile_enable_mtp_string_false_normalized() -> None:
+    """Profile with enable_mtp='false' (string) loads as bool False."""
+    tmpdir = tempfile.mkdtemp()
+    app_dir = Path(tmpdir)
+    _write_raw_profiles_json(app_dir, [
+        {"name": "mtp-string-false", "enable_mtp": "false", "spec_draft_n_max": 2},
+    ])
+    svc = LlamaLauncherService(app_dir=app_dir)
+    profiles = svc.load_profiles()
+    assert len(profiles) == 1
+    assert profiles[0].enable_mtp is False
+    assert isinstance(profiles[0].enable_mtp, bool)
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_load_profile_spec_draft_n_max_string_normalized() -> None:
+    """Profile with spec_draft_n_max='4' (string) loads as int 4."""
+    tmpdir = tempfile.mkdtemp()
+    app_dir = Path(tmpdir)
+    _write_raw_profiles_json(app_dir, [
+        {"name": "mtp-str-int", "enable_mtp": True, "spec_draft_n_max": "4"},
+    ])
+    svc = LlamaLauncherService(app_dir=app_dir)
+    profiles = svc.load_profiles()
+    assert len(profiles) == 1
+    assert profiles[0].spec_draft_n_max == 4
+    assert isinstance(profiles[0].spec_draft_n_max, int)
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_load_profile_spec_draft_n_max_invalid_defaults_to_2() -> None:
+    """Profile with invalid spec_draft_n_max loads with default 2."""
+    tmpdir = tempfile.mkdtemp()
+    app_dir = Path(tmpdir)
+    _write_raw_profiles_json(app_dir, [
+        {"name": "mtp-invalid-int", "enable_mtp": True, "spec_draft_n_max": "not-a-number"},
+    ])
+    svc = LlamaLauncherService(app_dir=app_dir)
+    profiles = svc.load_profiles()
+    assert len(profiles) == 1
+    assert profiles[0].spec_draft_n_max == 2
+    assert isinstance(profiles[0].spec_draft_n_max, int)
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_load_profile_legacy_spec_type_migrates_to_enable_mtp() -> None:
+    """Legacy --spec-type draft-mtp in advanced settings sets enable_mtp=True."""
+    tmpdir = tempfile.mkdtemp()
+    app_dir = Path(tmpdir)
+    _write_raw_profiles_json(app_dir, [
+        {
+            "name": "legacy-mtp",
+            "enable_mtp": False,
+            "spec_draft_n_max": 2,
+            "advanced_favorites": ["--spec-type"],
+            "advanced_values": {"--spec-type": "draft-mtp"},
+        },
+    ])
+    svc = LlamaLauncherService(app_dir=app_dir)
+    profiles = svc.load_profiles()
+    assert len(profiles) == 1
+    assert profiles[0].enable_mtp is True
+    # Legacy entries should be removed from advanced settings
+    assert "--spec-type" not in profiles[0].advanced_favorites
+    assert "--spec-type" not in profiles[0].advanced_values
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_load_profile_legacy_spec_draft_n_max_migrates() -> None:
+    """Legacy --spec-draft-n-max in advanced settings maps to spec_draft_n_max."""
+    tmpdir = tempfile.mkdtemp()
+    app_dir = Path(tmpdir)
+    _write_raw_profiles_json(app_dir, [
+        {
+            "name": "legacy-draft-n",
+            "enable_mtp": True,
+            "spec_draft_n_max": 2,
+            "advanced_favorites": ["--spec-draft-n-max"],
+            "advanced_values": {"--spec-draft-n-max": "5"},
+        },
+    ])
+    svc = LlamaLauncherService(app_dir=app_dir)
+    profiles = svc.load_profiles()
+    assert len(profiles) == 1
+    assert profiles[0].spec_draft_n_max == 5
+    assert "--spec-draft-n-max" not in profiles[0].advanced_favorites
+    assert "--spec-draft-n-max" not in profiles[0].advanced_values
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_load_profile_legacy_both_mtp_fields_migrate() -> None:
+    """Both legacy --spec-type and --spec-draft-n-max migrate together."""
+    tmpdir = tempfile.mkdtemp()
+    app_dir = Path(tmpdir)
+    _write_raw_profiles_json(app_dir, [
+        {
+            "name": "legacy-both",
+            "enable_mtp": False,
+            "spec_draft_n_max": 2,
+            "advanced_favorites": ["--spec-type", "--spec-draft-n-max"],
+            "advanced_values": {"--spec-type": "draft-mtp", "--spec-draft-n-max": "8"},
+        },
+    ])
+    svc = LlamaLauncherService(app_dir=app_dir)
+    profiles = svc.load_profiles()
+    assert len(profiles) == 1
+    assert profiles[0].enable_mtp is True
+    assert profiles[0].spec_draft_n_max == 8
+    # Both legacy entries removed
+    assert "--spec-type" not in profiles[0].advanced_favorites
+    assert "--spec-draft-n-max" not in profiles[0].advanced_favorites
+    assert "--spec-type" not in profiles[0].advanced_values
+    assert "--spec-draft-n-max" not in profiles[0].advanced_values
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_build_command_includes_mtp_args_when_enabled() -> None:
+    """build_command includes --spec-type draft-mtp when enable_mtp is True."""
+    profile = Profile(
+        name="mtp-test",
+        model_path="/fake/model.gguf",
+        enable_mtp=True,
+        spec_draft_n_max=4,
+    )
+    # Empty options dict is fine — no advanced favorites to resolve
+    cmd = cmd_module.build_command(Path("/fake/server.exe"), profile, {})
+    assert "--spec-type" in cmd
+    idx = cmd.index("--spec-type")
+    assert cmd[idx + 1] == "draft-mtp"
+    assert "--spec-draft-n-max" in cmd
+    n_idx = cmd.index("--spec-draft-n-max")
+    assert cmd[n_idx + 1] == "4"
+
+
+def test_build_command_omits_mtp_args_when_disabled() -> None:
+    """build_command omits MTP args when enable_mtp is False."""
+    profile = Profile(
+        name="no-mtp",
+        model_path="/fake/model.gguf",
+        enable_mtp=False,
+        spec_draft_n_max=2,
+    )
+    cmd = cmd_module.build_command(Path("/fake/server.exe"), profile, {})
+    assert "--spec-type" not in cmd
+    assert "--spec-draft-n-max" not in cmd
+
+
+def test_put_profile_mtp_fields_roundtrip() -> None:
+    """PUT MTP fields, GET them back, values are preserved correctly."""
+    host, port, stop, server, thread, tmpdir = _make_server_with_profiles(
+        [Profile(name="original")]
+    )
+    try:
+        status, data = _request(
+            "PUT",
+            "/api/profiles/0",
+            host,
+            port,
+            body={"enable_mtp": True, "spec_draft_n_max": 6},
+        )
+        assert status == 200
+        assert data["enable_mtp"] is True
+        assert data["spec_draft_n_max"] == 6
+
+        # Verify persistence round-trip via GET
+        status2, data2 = _request("GET", "/api/profiles/0", host, port)
+        assert status2 == 200
+        assert data2["enable_mtp"] is True
+        assert data2["spec_draft_n_max"] == 6
+    finally:
+        stop.set()
+        server.server_close()
+        thread.join(timeout=2)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_build_command_mtp_flags_unique_with_legacy_advanced() -> None:
+    """Command has exactly one --spec-type and one --spec-draft-n-max even when
+    enable_mtp=True and legacy entries also exist in advanced_favorites."""
+    profile = Profile(
+        name="mtp-dup",
+        model_path="/fake/model.gguf",
+        enable_mtp=True,
+        spec_draft_n_max=4,
+        advanced_favorites=["--spec-type", "--spec-draft-n-max", "--verbose"],
+        advanced_values={"--spec-type": "draft-mtp", "--spec-draft-n-max": "9", "--verbose": "1"},
+    )
+    cmd = cmd_module.build_command(Path("/fake/server.exe"), profile, {})
+    # Exactly one occurrence of each MTP flag
+    assert cmd.count("--spec-type") == 1
+    assert cmd.count("--spec-draft-n-max") == 1
+    # Values come from the dedicated fields, not the advanced entries
+    idx = cmd.index("--spec-type")
+    assert cmd[idx + 1] == "draft-mtp"
+    n_idx = cmd.index("--spec-draft-n-max")
+    assert cmd[n_idx + 1] == "4"
+    # Non-MTP advanced option still emitted
+    assert "--verbose" in cmd
+
+
+def test_build_command_mtp_alias_deduped() -> None:
+    """When enable_mtp=True, advanced favorites using aliases that resolve to
+    --spec-type or --spec-draft-n-max are also skipped (deduped by canonical key)."""
+    profile = Profile(
+        name="mtp-alias",
+        model_path="/fake/model.gguf",
+        enable_mtp=True,
+        spec_draft_n_max=4,
+        advanced_favorites=["-st", "-sdn", "--verbose"],
+        advanced_values={"-st": "draft-mtp", "-sdn": "9", "--verbose": "1"},
+    )
+    # Options dict where -st aliases to --spec-type, -sdn aliases to --spec-draft-n-max
+    options = {
+        "--spec-type": LlamaOption(
+            key="--spec-type", aliases=["-st"], arity=1,
+            default="", description="", positive_flag="", negative_flag="",
+        ),
+        "--spec-draft-n-max": LlamaOption(
+            key="--spec-draft-n-max", aliases=["-sdn"], arity=1,
+            default="", description="", positive_flag="", negative_flag="",
+        ),
+    }
+    cmd = cmd_module.build_command(Path("/fake/server.exe"), profile, options)
+    # Exactly one occurrence of each MTP flag (aliases must be skipped)
+    assert cmd.count("--spec-type") == 1
+    assert cmd.count("--spec-draft-n-max") == 1
+    idx = cmd.index("--spec-type")
+    assert cmd[idx + 1] == "draft-mtp"
+    n_idx = cmd.index("--spec-draft-n-max")
+    assert cmd[n_idx + 1] == "4"
+    # Non-MTP advanced option still emitted
+    assert "--verbose" in cmd
+
+
+def test_load_profile_malformed_advanced_favorites_no_crash() -> None:
+    """Profile with advanced_favorites as string (not list) loads without crash."""
+    tmpdir = tempfile.mkdtemp()
+    app_dir = Path(tmpdir)
+    _write_raw_profiles_json(app_dir, [
+        {
+            "name": "malformed-favs",
+            "enable_mtp": True,
+            "spec_draft_n_max": 2,
+            "advanced_favorites": "--spec-type",  # string, not list
+            "advanced_values": {},
+        },
+    ])
+    svc = LlamaLauncherService(app_dir=app_dir)
+    profiles = svc.load_profiles()
+    assert len(profiles) == 1
+    assert profiles[0].enable_mtp is True
+    # advanced_favorites should fall back to default (empty list) since it's malformed
+    assert isinstance(profiles[0].advanced_favorites, list)
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_load_profile_malformed_advanced_values_no_crash() -> None:
+    """Profile with advanced_values as string (not dict) loads without crash."""
+    tmpdir = tempfile.mkdtemp()
+    app_dir = Path(tmpdir)
+    _write_raw_profiles_json(app_dir, [
+        {
+            "name": "malformed-vals",
+            "enable_mtp": True,
+            "spec_draft_n_max": 2,
+            "advanced_favorites": [],
+            "advanced_values": "not-a-dict",  # string, not dict
+        },
+    ])
+    svc = LlamaLauncherService(app_dir=app_dir)
+    profiles = svc.load_profiles()
+    assert len(profiles) == 1
+    assert profiles[0].enable_mtp is True
+    assert isinstance(profiles[0].advanced_values, dict)
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -622,6 +930,21 @@ if __name__ == "__main__":
         test_get_models_200_shape,
         test_get_logs_200_shape,
         test_unknown_route_404,
+        # MTP normalization
+        test_load_profile_enable_mtp_string_true_normalized,
+        test_load_profile_enable_mtp_string_false_normalized,
+        test_load_profile_spec_draft_n_max_string_normalized,
+        test_load_profile_spec_draft_n_max_invalid_defaults_to_2,
+        test_load_profile_legacy_spec_type_migrates_to_enable_mtp,
+        test_load_profile_legacy_spec_draft_n_max_migrates,
+        test_load_profile_legacy_both_mtp_fields_migrate,
+        test_build_command_includes_mtp_args_when_enabled,
+        test_build_command_omits_mtp_args_when_disabled,
+        test_put_profile_mtp_fields_roundtrip,
+        test_build_command_mtp_flags_unique_with_legacy_advanced,
+        test_build_command_mtp_alias_deduped,
+        test_load_profile_malformed_advanced_favorites_no_crash,
+        test_load_profile_malformed_advanced_values_no_crash,
     ]
 
     passed = 0

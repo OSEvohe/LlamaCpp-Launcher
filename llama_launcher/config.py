@@ -35,6 +35,79 @@ def _safe_str(value, default: str = "") -> str:
     return value
 
 
+def _safe_bool(value, default: bool = False) -> bool:
+    """Return *value* as bool; coerce ``"true"``/``"false"`` strings gracefully."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return default
+
+
+def _normalize_mtp(item: dict) -> None:
+    """Normalize MTP fields on a raw profile dict before ``Profile(**item)``.
+
+    1. Migrate legacy ``--spec-type draft-mtp`` from advanced settings.
+    2. Migrate legacy ``--spec-draft-n-max`` from advanced settings.
+    3. Coerce ``enable_mtp`` to bool and ``spec_draft_n_max`` to int.
+    4. Replace malformed advanced_favorites/advanced_values with safe defaults.
+    """
+    adv_favs_raw = item.get("advanced_favorites")
+    adv_vals_raw = item.get("advanced_values")
+
+    # Replace malformed types with safe defaults before any migration
+    if not isinstance(adv_favs_raw, list):
+        item["advanced_favorites"] = []
+        adv_favs_raw = item["advanced_favorites"]
+    if not isinstance(adv_vals_raw, dict):
+        item["advanced_values"] = {}
+        adv_vals_raw = item["advanced_values"]
+
+    # -- legacy migration --------------------------------------------------
+    has_legacy_spec_type = False
+    legacy_draft_n_max = None
+
+    if "--spec-type" in adv_favs_raw or "--spec-type" in adv_vals_raw:
+        val = adv_vals_raw.get("--spec-type", "")
+        if val and val.strip() == "draft-mtp":
+            has_legacy_spec_type = True
+
+    if "--spec-draft-n-max" in adv_favs_raw or "--spec-draft-n-max" in adv_vals_raw:
+        raw = adv_vals_raw.get("--spec-draft-n-max", "")
+        if raw:
+            try:
+                legacy_draft_n_max = int(raw.strip())
+            except (ValueError, TypeError):
+                pass
+
+    if has_legacy_spec_type:
+        item["enable_mtp"] = True
+        if "--spec-type" in adv_favs_raw:
+            adv_favs_raw.remove("--spec-type")
+        adv_vals_raw.pop("--spec-type", None)
+
+    if legacy_draft_n_max is not None:
+        item["spec_draft_n_max"] = legacy_draft_n_max
+        if "--spec-draft-n-max" in adv_favs_raw:
+            adv_favs_raw.remove("--spec-draft-n-max")
+        adv_vals_raw.pop("--spec-draft-n-max", None)
+
+    # -- type coercion -----------------------------------------------------
+    if "enable_mtp" in item:
+        item["enable_mtp"] = _safe_bool(item["enable_mtp"])
+
+    if "spec_draft_n_max" in item:
+        val = item["spec_draft_n_max"]
+        if isinstance(val, bool) or not isinstance(val, int):
+            if isinstance(val, str):
+                try:
+                    item["spec_draft_n_max"] = int(val.strip())
+                except (ValueError, TypeError):
+                    item["spec_draft_n_max"] = 2
+            else:
+                item["spec_draft_n_max"] = 2
+
+
 def load_global() -> GlobalSettings:
     ensure_state()
     if not GLOBAL_FILE.exists():
@@ -72,6 +145,7 @@ def load_profiles() -> List[Profile]:
             item.pop("flash_attn", None)
             item.setdefault("advanced_values", {})
             item.setdefault("advanced_favorites", [])
+            _normalize_mtp(item)
             profiles.append(Profile(**item))
         return profiles or [Profile()]
     except Exception:

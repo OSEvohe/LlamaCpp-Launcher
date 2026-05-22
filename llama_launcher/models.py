@@ -37,7 +37,13 @@ class Profile:
     n_gpu_layers: int = 0
     temp: float = 0.7
     top_p: float = 0.95
+    top_k: int = 40
+    min_p: float = 0.05
+    presence_penalty: float = 0.0
+    np: int = 1
     batch_size: int = 512
+    enable_mtp: bool = False
+    spec_draft_n_max: int = 2
     embeddings: bool = False
     flash_attn_mode: str = "off"
     kv_cache_type: str = "f16"

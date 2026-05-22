@@ -35,6 +35,117 @@ def _safe_str(value, default: str = "") -> str:
     return value
 
 
+def _coerce_bool(value, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+    raise ValueError(f"{field_name} must be a boolean")
+
+
+def _coerce_int(value, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return int(value)
+        except ValueError:
+            pass
+    raise ValueError(f"{field_name} must be an integer")
+
+
+def _coerce_float(value, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a number")
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return float(value)
+        except ValueError:
+            pass
+    raise ValueError(f"{field_name} must be a number")
+
+
+def _safe_bool(value, default: bool = False) -> bool:
+    """Return *value* as bool; coerce ``"true"``/``"false"`` strings gracefully."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return default
+
+
+def _normalize_mtp(item: dict) -> None:
+    """Normalize MTP fields on a raw profile dict before ``Profile(**item)``.
+
+    1. Migrate legacy ``--spec-type draft-mtp`` from advanced settings.
+    2. Migrate legacy ``--spec-draft-n-max`` from advanced settings.
+    3. Coerce ``enable_mtp`` to bool and ``spec_draft_n_max`` to int.
+    4. Replace malformed advanced_favorites/advanced_values with safe defaults.
+    """
+    adv_favs_raw = item.get("advanced_favorites")
+    adv_vals_raw = item.get("advanced_values")
+
+    # Replace malformed types with safe defaults before any migration
+    if not isinstance(adv_favs_raw, list):
+        item["advanced_favorites"] = []
+        adv_favs_raw = item["advanced_favorites"]
+    if not isinstance(adv_vals_raw, dict):
+        item["advanced_values"] = {}
+        adv_vals_raw = item["advanced_values"]
+
+    # -- legacy migration --------------------------------------------------
+    has_legacy_spec_type = False
+    legacy_draft_n_max = None
+
+    if "--spec-type" in adv_favs_raw or "--spec-type" in adv_vals_raw:
+        val = adv_vals_raw.get("--spec-type", "")
+        if val and val.strip() == "draft-mtp":
+            has_legacy_spec_type = True
+
+    if "--spec-draft-n-max" in adv_favs_raw or "--spec-draft-n-max" in adv_vals_raw:
+        raw = adv_vals_raw.get("--spec-draft-n-max", "")
+        if raw:
+            try:
+                legacy_draft_n_max = int(raw.strip())
+            except (ValueError, TypeError):
+                pass
+
+    if has_legacy_spec_type:
+        item["enable_mtp"] = True
+        if "--spec-type" in adv_favs_raw:
+            adv_favs_raw.remove("--spec-type")
+        adv_vals_raw.pop("--spec-type", None)
+
+    if legacy_draft_n_max is not None:
+        item["spec_draft_n_max"] = legacy_draft_n_max
+        if "--spec-draft-n-max" in adv_favs_raw:
+            adv_favs_raw.remove("--spec-draft-n-max")
+        adv_vals_raw.pop("--spec-draft-n-max", None)
+
+    # -- type coercion -----------------------------------------------------
+    if "enable_mtp" in item:
+        item["enable_mtp"] = _safe_bool(item["enable_mtp"])
+
+    if "spec_draft_n_max" in item:
+        val = item["spec_draft_n_max"]
+        if isinstance(val, bool) or not isinstance(val, int):
+            if isinstance(val, str):
+                try:
+                    item["spec_draft_n_max"] = int(val.strip())
+                except (ValueError, TypeError):
+                    item["spec_draft_n_max"] = 2
+            else:
+                item["spec_draft_n_max"] = 2
+
+
 class LlamaLauncherService:
     """Facade encapsulating all core LLama Launcher operations."""
 
@@ -92,6 +203,7 @@ class LlamaLauncherService:
                 item.pop("flash_attn", None)
                 item.setdefault("advanced_values", {})
                 item.setdefault("advanced_favorites", [])
+                _normalize_mtp(item)
                 profiles.append(Profile(**item))
             return profiles or [Profile()]
         except Exception:
@@ -143,6 +255,24 @@ class LlamaLauncherService:
             if not (0 <= index < len(profiles)):
                 raise IndexError(f"profile index {index} out of range")
             existing = profiles[index]
+            top_k = existing.top_k
+            if "top_k" in profile_data:
+                top_k = _coerce_int(profile_data.get("top_k"), "top_k")
+            min_p = existing.min_p
+            if "min_p" in profile_data:
+                min_p = _coerce_float(profile_data.get("min_p"), "min_p")
+            presence_penalty = existing.presence_penalty
+            if "presence_penalty" in profile_data:
+                presence_penalty = _coerce_float(profile_data.get("presence_penalty"), "presence_penalty")
+            np_value = existing.np
+            if "np" in profile_data:
+                np_value = _coerce_int(profile_data.get("np"), "np")
+            enable_mtp = existing.enable_mtp
+            if "enable_mtp" in profile_data:
+                enable_mtp = _coerce_bool(profile_data.get("enable_mtp"), "enable_mtp")
+            spec_draft_n_max = existing.spec_draft_n_max
+            if "spec_draft_n_max" in profile_data:
+                spec_draft_n_max = _coerce_int(profile_data.get("spec_draft_n_max"), "spec_draft_n_max")
             updated = Profile(
                 name=profile_data.get("name", existing.name),
                 model_path=profile_data.get("model_path", existing.model_path),
@@ -153,7 +283,13 @@ class LlamaLauncherService:
                 n_gpu_layers=profile_data.get("n_gpu_layers", existing.n_gpu_layers),
                 temp=profile_data.get("temp", existing.temp),
                 top_p=profile_data.get("top_p", existing.top_p),
+                top_k=top_k,
+                min_p=min_p,
+                presence_penalty=presence_penalty,
+                np=np_value,
                 batch_size=profile_data.get("batch_size", existing.batch_size),
+                enable_mtp=enable_mtp,
+                spec_draft_n_max=spec_draft_n_max,
                 embeddings=profile_data.get("embeddings", existing.embeddings),
                 flash_attn_mode=profile_data.get("flash_attn_mode", existing.flash_attn_mode),
                 kv_cache_type=profile_data.get("kv_cache_type", existing.kv_cache_type),

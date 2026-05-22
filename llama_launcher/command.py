@@ -69,16 +69,25 @@ def build_command(
         "--n-gpu-layers", str(profile.n_gpu_layers),
         "--temp", str(profile.temp),
         "--top-p", str(profile.top_p),
+        "--top-k", str(profile.top_k),
+        "--min-p", str(profile.min_p),
+        "--presence-penalty", str(profile.presence_penalty),
+        "--parallel", str(profile.np),
         "--batch-size", str(profile.batch_size),
         "--flash-attn", profile.flash_attn_mode,
         "--cache-type-k", profile.kv_cache_type,
         "--cache-type-v", profile.kv_cache_type,
     ]
+    if profile.enable_mtp:
+        cmd.extend(["--spec-type", "draft-mtp", "--spec-draft-n-max", str(profile.spec_draft_n_max)])
     if profile.embeddings:
         cmd.append("--embeddings")
 
     for raw_key in profile.advanced_favorites:
         ckey = canonical_adv_key(raw_key, options)
+        # Skip MTP-dedicated flags (including aliases) already emitted above via enable_mtp
+        if profile.enable_mtp and ckey in ("--spec-type", "--spec-draft-n-max"):
+            continue
         opt = options.get(ckey)
         val = favorite_string_value(raw_key, ckey, opt, profile)
         if val is None:

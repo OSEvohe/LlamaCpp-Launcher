@@ -208,6 +208,9 @@ class _APIHandler(BaseHTTPRequestHandler):
         except IndexError:
             self._error(404, f"profile index {index} out of range")
             return
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
         self._json_response(200, asdict(updated))
 
     def _handle_delete_profile(self, index: int) -> None:
