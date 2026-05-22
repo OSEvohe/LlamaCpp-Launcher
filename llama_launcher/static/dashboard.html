@@ -109,6 +109,21 @@ tr:hover td{background:#161b22}
 .adv-fav-row{display:flex;align-items:center;gap:8px;margin-bottom:6px}
 .adv-fav-row label{min-width:180px;font-size:12px;color:#8b949e;text-align:right}
 .adv-empty{color:#8b949e;font-size:12px;padding:8px 10px;font-style:italic}
+
+/* ---- switch (slider toggle) ---- */
+input.switch{
+  appearance:none;-webkit-appearance:none;-moz-appearance:none;
+  width:40px;height:22px;background:#30363d;border-radius:11px;
+  position:relative;outline:none;cursor:pointer;
+  flex-shrink:0;margin:0
+}
+input.switch::after{
+  content:'';position:absolute;top:2px;left:2px;
+  width:18px;height:18px;border-radius:50%;background:#c9d1d9;
+  transition:background .2s,transform .2s
+}
+input.switch:checked{background:#238636}
+input.switch:checked::after{transform:translateX(18px);background:#fff}
 </style>
 </head>
 <body>
@@ -204,6 +219,18 @@ tr:hover td{background:#161b22}
         <div class="form-grid">
           <div class="form-row"><label>Top P</label><input id="peTopP" type="number" step="0.01"></div>
           <div class="form-row"><label>Batch Size</label><input id="peBatchSize" type="number"></div>
+        </div>
+        <div class="form-grid">
+          <div class="form-row"><label>Top K</label><input id="peTopK" type="number"></div>
+          <div class="form-row"><label>Min P</label><input id="peMinP" type="number" step="0.01"></div>
+        </div>
+        <div class="form-grid">
+          <div class="form-row"><label>Presence Penalty</label><input id="pePresencePenalty" type="number" step="0.01"></div>
+          <div class="form-row"><label>NP</label><input id="peNp" type="number"></div>
+        </div>
+        <div class="form-grid">
+          <div class="form-row"><label>Enable MTP</label><input id="peEnableMtp" type="checkbox" class="switch"></div>
+          <div class="form-row"><label>spec_draft_n_max</label><input id="peSpecDraftNMax" type="number"></div>
         </div>
         <div class="form-row"><label>Flash Attention</label>
           <select id="peFlashAttn"><option value="off">off</option><option value="on">on</option><option value="imma">imma</option></select>
@@ -470,6 +497,13 @@ function openProfileEditor(index) {
   $('#peTemp').value = p.temp ?? 0.7;
   $('#peTopP').value = p.top_p ?? 0.95;
   $('#peBatchSize').value = p.batch_size ?? 512;
+  $('#peTopK').value = p.top_k ?? 40;
+  $('#peMinP').value = p.min_p ?? 0.05;
+  $('#pePresencePenalty').value = p.presence_penalty ?? 0.0;
+  $('#peNp').value = p.np ?? 1;
+  $('#peEnableMtp').checked = !!p.enable_mtp;
+  $('#peSpecDraftNMax').value = p.spec_draft_n_max ?? 2;
+  syncMtpFields();
   $('#peFlashAttn').value = p.flash_attn_mode || 'off';
   $('#peKvCache').value = p.kv_cache_type || 'f16';
   $('#peExtraArgs').value = p.extra_args || '';
@@ -477,11 +511,23 @@ function openProfileEditor(index) {
   syncAdvProfileIdx(index, true);
 }
 
+function syncMtpFields() {
+  const enabled = $('#peEnableMtp').checked;
+  $('#peSpecDraftNMax').disabled = !enabled;
+}
+
+$('#peEnableMtp').addEventListener('change', syncMtpFields);
+
 async function doSaveProfile() {
   const el = $('#peResult');
   el.textContent = '';
   const index = parseInt($('#peIndex').value, 10);
   const cachedProfile = _profilesCache[index];
+  const topK = parseInt($('#peTopK').value, 10);
+  const minP = parseFloat($('#peMinP').value);
+  const presencePenalty = parseFloat($('#pePresencePenalty').value);
+  const npValue = parseInt($('#peNp').value, 10);
+  const specDraftNMax = parseInt($('#peSpecDraftNMax').value, 10);
   const body = {
     name: $('#peName').value.trim() || 'unnamed',
     model_path: $('#peModelPath').value.trim(),
@@ -493,6 +539,12 @@ async function doSaveProfile() {
     temp: parseFloat($('#peTemp').value) || 0.7,
     top_p: parseFloat($('#peTopP').value) || 0.95,
     batch_size: parseInt($('#peBatchSize').value, 10) || 512,
+    top_k: Number.isNaN(topK) ? 40 : topK,
+    min_p: Number.isNaN(minP) ? 0.05 : minP,
+    presence_penalty: Number.isNaN(presencePenalty) ? 0.0 : presencePenalty,
+    np: Number.isNaN(npValue) ? 1 : npValue,
+    enable_mtp: $('#peEnableMtp').checked,
+    spec_draft_n_max: Number.isNaN(specDraftNMax) ? 2 : specDraftNMax,
     flash_attn_mode: $('#peFlashAttn').value,
     kv_cache_type: $('#peKvCache').value,
     extra_args: $('#peExtraArgs').value.trim(),
