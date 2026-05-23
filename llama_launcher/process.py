@@ -53,6 +53,32 @@ def start_server(cmd: list, stdout_path: Path, cwd: Path) -> int:
     return p.pid
 
 
+def find_llama_server_pid() -> int:
+    """Return the PID of a running llama-server process, or 0 if not found.
+
+    Uses ``tasklist`` filtered by image name as a fallback when the PID file
+    is missing or stale.
+    """
+    try:
+        proc = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq llama-server*", "/FO", "CSV", "/NH"],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        out = (proc.stdout or "").strip()
+        if not out or "No tasks are running" in out:
+            return 0
+        # First CSV column is the PID
+        first_line = out.splitlines()[0].strip()
+        pid_str = first_line.split(",")[0].strip('"')
+        return int(pid_str)
+    except Exception:
+        return 0
+
+
 def stop_server(pid: int) -> None:
     """Force-kill the process tree rooted at *pid* (taskkill /F /T)."""
     subprocess.run(

@@ -363,7 +363,13 @@ class LlamaLauncherService:
 
     def is_server_running(self) -> tuple[bool, int]:
         pid = process.read_pid(self._pid_file)
-        return (process.is_process_running(pid), pid)
+        if pid > 0 and process.is_process_running(pid):
+            return (True, pid)
+        # Fallback: search by process name when PID file is missing/stale
+        fallback_pid = process.find_llama_server_pid()
+        if fallback_pid > 0:
+            return (True, fallback_pid)
+        return (False, 0)
 
     def launch(self, cmd: list, exe_path: str = "") -> int:
         with self._lock:
@@ -390,16 +396,20 @@ class LlamaLauncherService:
     def stop(self) -> int:
         with self._lock:
             pid = process.read_pid(self._pid_file)
-            if pid <= 0:
-                return 0
-            if not process.is_process_running(pid):
+            if pid > 0 and process.is_process_running(pid):
+                process.stop_server(pid)
                 if self._pid_file.exists():
                     self._pid_file.unlink()
-                return 0
-            process.stop_server(pid)
+                return pid
+            # Clean up stale PID file
             if self._pid_file.exists():
                 self._pid_file.unlink()
-            return pid
+            # Fallback: search by process name when PID file is missing/stale
+            fallback_pid = process.find_llama_server_pid()
+            if fallback_pid > 0:
+                process.stop_server(fallback_pid)
+                return fallback_pid
+            return 0
 
     def restart(self, cmd: list, exe_path: str = "") -> int:
         """Atomically stop any running server and launch a new one.
