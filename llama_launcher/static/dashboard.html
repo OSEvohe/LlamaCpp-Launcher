@@ -138,6 +138,9 @@ input.switch::after{
 }
 input.switch:checked{background:#238636}
 input.switch:checked::after{transform:translateX(18px);background:#fff}
+
+/* ---- model path toggle ---- */
+#peModelPathManual{margin-top:4px}
 </style>
 </head>
 <body>
@@ -181,7 +184,10 @@ input.switch:checked::after{transform:translateX(18px);background:#fff}
         <input type="hidden" id="peIndex">
         <div class="form-grid">
           <div class="form-row"><label>Name</label><input id="peName" type="text"></div>
-          <div class="form-row"><label>Model Path</label><input id="peModelPath" type="text"></div>
+          <div class="form-row"><label>Model Path</label>
+            <select id="peModelPath"><option value="">-- select a model --</option></select>
+            <input id="peModelPathManual" type="text" style="display:none" placeholder="Type model path manually">
+          </div>
         </div>
         <div class="form-grid">
           <div class="form-row"><label>Host</label><input id="peHost" type="text"></div>
@@ -342,6 +348,8 @@ function show(el, msg, isError) {
 
 // ---- state ----
 let selectedProfileIdx = 0;
+let _modelPathReqId = 0;
+let _modelPathLoading = false;
 
 // ---- tabs ----
 $$('.tab-btn').forEach(btn => {
@@ -473,13 +481,15 @@ async function fetchProfiles() {
   }
 }
 
-function openProfileEditor(index) {
+async function openProfileEditor(index) {
+  const reqId = ++_modelPathReqId;
   const p = _profilesCache[index];
   if (!p) return;
   $('#profileEditor').style.display = 'block';
   $('#peIndex').value = index;
   $('#peName').value = p.name || '';
-  $('#peModelPath').value = p.model_path || '';
+  await populateModelPathSelect(p.model_path || '', reqId);
+  if (reqId !== _modelPathReqId) return;
   $('#peHost').value = p.host || '127.0.0.1';
   $('#pePort').value = p.port ?? 8080;
   $('#peCtxSize').value = p.ctx_size ?? 4096;
@@ -509,9 +519,55 @@ function syncMtpFields() {
 
 $('#peEnableMtp').addEventListener('change', syncMtpFields);
 
+async function populateModelPathSelect(currentPath, reqId) {
+  reqId = reqId || ++_modelPathReqId;
+  const sel = $('#peModelPath');
+  const manual = $('#peModelPathManual');
+  sel.innerHTML = '<option value="">Loading models…</option>';
+  _modelPathLoading = true;
+  let models = [];
+  try {
+    const d = await api('/api/models');
+    if (reqId !== _modelPathReqId) { _modelPathLoading = false; return; }
+    models = d.models || [];
+  } catch (_e) { /* scan failed — leave dropdown empty */ }
+  if (reqId !== _modelPathReqId) { _modelPathLoading = false; return; }
+  _modelPathLoading = false;
+  sel.innerHTML = '<option value="">-- select a model --</option>';
+  models.forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = m;
+    sel.appendChild(opt);
+  });
+  const otherOpt = document.createElement('option');
+  otherOpt.value = '__other__';
+  otherOpt.textContent = 'Other (type path manually)';
+  otherOpt.dataset.other = '1';
+  sel.appendChild(otherOpt);
+  if (models.includes(currentPath)) {
+    sel.value = currentPath;
+    manual.style.display = 'none';
+  } else if (currentPath) {
+    sel.value = '__other__';
+    manual.value = currentPath;
+    manual.style.display = 'block';
+  } else {
+    manual.style.display = 'none';
+  }
+}
+
+$('#peModelPath').addEventListener('change', () => {
+  const sel = $('#peModelPath');
+  const manual = $('#peModelPathManual');
+  const isOther = sel.selectedOptions[0] && sel.selectedOptions[0].dataset.other === '1';
+  manual.style.display = isOther ? 'block' : 'none';
+});
+
 async function doSaveProfile() {
   const el = $('#peResult');
   el.textContent = '';
+  if (_modelPathLoading) { show(el, 'Models still loading — please wait.', true); return; }
   const index = parseInt($('#peIndex').value, 10);
   const cachedProfile = _profilesCache[index];
   const topK = parseInt($('#peTopK').value, 10);
@@ -521,7 +577,7 @@ async function doSaveProfile() {
   const specDraftNMax = parseInt($('#peSpecDraftNMax').value, 10);
   const body = {
     name: $('#peName').value.trim() || 'unnamed',
-    model_path: $('#peModelPath').value.trim(),
+    model_path: ($('#peModelPath').selectedOptions[0]?.dataset.other === '1') ? $('#peModelPathManual').value.trim() : $('#peModelPath').value,
     host: $('#peHost').value.trim() || '127.0.0.1',
     port: parseInt($('#pePort').value, 10) || 8080,
     ctx_size: parseInt($('#peCtxSize').value, 10) || 4096,
