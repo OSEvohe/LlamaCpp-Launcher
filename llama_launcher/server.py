@@ -139,7 +139,8 @@ class _APIHandler(BaseHTTPRequestHandler):
     def _handle_root(self) -> None:
         """Serve the dashboard HTML file, or a concise fallback if missing."""
         try:
-            html = open(_DASHBOARD_PATH, encoding="utf-8").read()
+            with open(_DASHBOARD_PATH, encoding="utf-8") as f:
+                html = f.read()
         except OSError:
             html = (
                 "<!DOCTYPE html><html><head><meta charset='utf-8'>"
@@ -301,48 +302,64 @@ class _APIHandler(BaseHTTPRequestHandler):
         self._json_response(200, {"models": models})
 
     # Launch / Stop / Restart
-    def _handle_launch(self) -> None:
-        svc = self._service()
+
+    def _prepare_launch(
+        self, svc: Any
+    ) -> tuple[str, list[str]] | None:
+        """Parse body, resolve profile/exe/options, build command.
+
+        Returns ``(resolved_exe, cmd)`` on success or ``None`` if an error
+        response was already sent.
+        """
         try:
             body = self._read_json_body()
         except (ValueError, json.JSONDecodeError):
             self._error(400, "invalid JSON")
-            return
+            return None
         except OverflowError:
             self._error(413, "request body too large")
-            return
+            return None
         if body is None:
             self._error(400, "missing request body")
-            return
+            return None
         profile_index = body.get("profile_index", 0)
         if not isinstance(profile_index, int) or isinstance(profile_index, bool):
             self._error(400, "profile_index must be an integer")
-            return
+            return None
         exe_path = body.get("exe_path", "")
 
         profiles = svc.load_profiles()
         if not (0 <= profile_index < len(profiles)):
             self._error(400, f"profile index {profile_index} out of range")
-            return
+            return None
         profile = profiles[profile_index]
 
         settings = svc.load_global()
         resolved_exe = exe_path or settings.llama_server_path
         if not resolved_exe:
             self._error(400, "no exe_path provided and none saved in settings")
-            return
+            return None
 
         try:
             opts = svc.load_options(resolved_exe)
         except RuntimeError as exc:
             self._error(500, str(exc))
-            return
+            return None
 
         try:
             cmd = svc.build_command(profile, resolved_exe, opts)
         except RuntimeError as exc:
             self._error(400, str(exc))
+            return None
+
+        return resolved_exe, cmd
+
+    def _handle_launch(self) -> None:
+        svc = self._service()
+        result = self._prepare_launch(svc)
+        if result is None:
             return
+        resolved_exe, cmd = result
 
         try:
             pid = svc.launch(cmd, exe_path=resolved_exe)
@@ -359,47 +376,10 @@ class _APIHandler(BaseHTTPRequestHandler):
 
     def _handle_restart(self) -> None:
         svc = self._service()
-        try:
-            body = self._read_json_body()
-        except (ValueError, json.JSONDecodeError):
-            self._error(400, "invalid JSON")
+        result = self._prepare_launch(svc)
+        if result is None:
             return
-        except OverflowError:
-            self._error(413, "request body too large")
-            return
-
-        if body is None:
-            self._error(400, "missing request body")
-            return
-        profile_index = body.get("profile_index", 0)
-        if not isinstance(profile_index, int) or isinstance(profile_index, bool):
-            self._error(400, "profile_index must be an integer")
-            return
-        exe_path = body.get("exe_path", "")
-
-        profiles = svc.load_profiles()
-        if not (0 <= profile_index < len(profiles)):
-            self._error(400, f"profile index {profile_index} out of range")
-            return
-        profile = profiles[profile_index]
-
-        settings = svc.load_global()
-        resolved_exe = exe_path or settings.llama_server_path
-        if not resolved_exe:
-            self._error(400, "no exe_path provided and none saved in settings")
-            return
-
-        try:
-            opts = svc.load_options(resolved_exe)
-        except RuntimeError as exc:
-            self._error(500, str(exc))
-            return
-
-        try:
-            cmd = svc.build_command(profile, resolved_exe, opts)
-        except RuntimeError as exc:
-            self._error(400, str(exc))
-            return
+        resolved_exe, cmd = result
 
         try:
             pid = svc.restart(cmd, exe_path=resolved_exe)
