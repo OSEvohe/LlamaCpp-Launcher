@@ -1,34 +1,27 @@
 # LLama Launcher
 
-Launcher modulaire pour `llama-server` (llama.cpp) avec **TUI** (Textual), **dashboard web** et **API REST headless**.
+Launcher modulaire pour `llama-server` (llama.cpp) avec **dashboard web** et **API REST**.
 
 ## Lancer
 
 ```powershell
-pip install textual
-
-# Mode TUI (interface terminal)
 python main.py
 
-# Mode headless (API server uniquement, port 7890 par defaut)
-python main.py --headless
-
 # Personnaliser l'API host / port
-python main.py --headless --api-host 0.0.0.0 --api-port 7890
+python main.py --api-host 0.0.0.0 --api-port 7890
 ```
 
-## Modes d'execution
-
-| Mode | Commande | Description |
-|---|---|---|
-| **TUI** | `python main.py` | Interface terminal Textual. Si un port API est configure, un sidecar HTTP s' lance en background. |
-| **Headless** | `python main.py --headless` | API server uniquement, sans interface. Utile pour un controle distant via le dashboard web ou des scripts. |
+| Option | Description |
+|---|---|
+| `python main.py` | Lance l'API server + dashboard web (port 7890 par defaut). |
+| `--api-host` | Personnaliser l'host de l'API (ex: `0.0.0.0`). |
+| `--api-port` | Personnaliser le port de l'API (ex: `8080`). |
 
 ## Architecture
 
 ```
 llama_launcher/
-├── main.py            # Entry point + parsing CLI (--headless, --api-host, --api-port)
+├── main.py            # Entry point + parsing CLI (--api-host, --api-port)
 ├── api.py             # LlamaLauncherService (facade de toute la logique)
 ├── server.py          # HTTP API server (stdlib, zero dependances externes)
 ├── config.py          # Constantes de chemin + persistance JSON
@@ -38,21 +31,10 @@ llama_launcher/
 ├── discovery.py       # Scanner recursif des fichiers .gguf
 ├── monitoring.py      # RAM (WinAPI), VRAM (nvidia-smi), log tailing
 ├── options.py         # Parsing de llama-server --help pour les options avances
-├── ui/app.py          # Interface TUI (Textual)
 └── static/dashboard.html  # Dashboard web (vanilla JS, zero framework)
 ```
 
 ## Fonctionnalites
-
-### TUI (Textual)
-- Interface terminal fluide sans clignotement
-- Edition des profils (`model`, `host`, `port`, `ctx-size`, `threads`, `n-gpu-layers`, `temp`, `top-p`, `batch-size`, `flash-attn`, `kv-cache-type`, `extra-args`)
-- Gestion des **advanced favorites** : parcourir les options de `llama-server`, les etoiler par profil, definir des valeurs
-- Boutons `Launch`, `Stop`, `Restart`
-- Logs `stdout` en live tail
-- Monitoring RAM / VRAM
-- Decouverte automatique des modeles `.gguf`
-- Profils sauvegardables (multiple profils)
 
 ### Dashboard Web
 Accessible via le navigateur a l'adresse de l'API (ex: `http://127.0.0.1:7890/`).
@@ -94,7 +76,7 @@ Les profils supportent deux champs avances :
 - `advanced_favorites` — liste de flags `llama-server` a injecter dans la commande
 - `advanced_values` — valeurs associees a chaque favori
 
-Ces options sont assemblees par `command.py::build_command()` et injectees dans la commande finale. Elles sont gérables via l'onglet **Advanced** du dashboard web ou l'equivalent TUI.
+Ces options sont assemblees par `command.py::build_command()` et injectees dans la commande finale. Elles sont gérables via l'onglet **Advanced** du dashboard web.
 
 ## Fichiers sauvegardes
 
@@ -109,5 +91,6 @@ Les donnees sont stockees dans `.launcher/` :
 
 ## Dependances
 
-- **textual** — seule dependance externe (TUI)
-- **stdlib Python** — API server (`http.server`), monitoring (`ctypes`, `subprocess`), zero dependance additionnelle
+Aucune dependance externe — stdlib Python uniquement :
+- API server : `http.server`
+- Monitoring : `ctypes`, `subprocess`

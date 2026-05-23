@@ -3,9 +3,8 @@
 ## Quick start
 
 ```powershell
-pip install textual
-python main.py              # TUI mode
-python main.py --headless   # API-only (port 7890 default)
+python main.py              # API server + web dashboard (port 7890 default)
+python main.py --api-port 8080  # custom port
 ```
 
 ## Running tests
@@ -27,13 +26,13 @@ python tests\test_concurrency.py
 pytest tests/
 ```
 
-Test files also import `llama_launcher.ui.app` indirectly through `main()`. The regression and headless tests mock this away — do not install `textual` just to run those tests; they work without it. The API and concurrency tests use real `ThreadingHTTPServer` on ephemeral ports (port 0) with isolated temp dirs.
+The API and concurrency tests use real `ThreadingHTTPServer` on ephemeral ports (port 0) with isolated temp dirs.
 
 ## Architecture
 
 - **`llama_launcher/`** — the only real package. All logic lives here.
 - **`main.py`** and **`launcher.py`** (root) — thin wrappers delegating to `llama_launcher.main.main()`. Keep them in sync; tests verify identity.
-- **`llama_launcher/api.py`** — `LlamaLauncherService` is the central facade. API server, TUI, and tests all call through it.
+- **`llama_launcher/api.py`** — `LlamaLauncherService` is the central facade. API server and tests all call through it.
 - **`llama_launcher/server.py`** — stdlib `http.server` only. Zero external deps. Routes are plain string matches on `self.path`.
 - **`llama_launcher/config.py`** — legacy module-level persistence helpers. `LlamaLauncherService` delegates to them when `app_dir is APP_DIR`.
 - **`llama_launcher/process.py`** — Windows-only: `tasklist` / `taskkill` for process lifecycle.
