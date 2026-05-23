@@ -1,4 +1,4 @@
-"""Convenience entry point: runs the LLama Launcher TUI.
+"""Convenience entry point: runs the LLama Launcher API server and web dashboard.
 
 Delegates to llama_launcher.main.main().
 """

@@ -1,4 +1,4 @@
-﻿"""Backward-compat wrapper: runs the launcher TUI.
+﻿"""Backward-compat wrapper: runs the launcher API server and web dashboard.
 
 Delegates to the canonical startup path in llama_launcher.main.
 """
