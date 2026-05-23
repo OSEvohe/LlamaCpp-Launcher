@@ -7,6 +7,19 @@ python main.py              # API server + web dashboard (port 7890 default)
 python main.py --api-port 8080  # custom port
 ```
 
+## Restart (Scheduled Task install)
+
+If LLama Launcher is installed as a Windows Scheduled Task:
+
+```powershell
+# Optional: find the exact task name/path
+Get-ScheduledTask | Where-Object { $_.TaskName -match "llama|launcher" }
+
+# Restart task (default path is "\")
+Stop-ScheduledTask -TaskName "LLama Launcher"
+Start-ScheduledTask -TaskName "LLama Launcher"
+```
+
 ## Running tests
 
 No `pyproject.toml` or `setup.py` — the package is **not pip-installable**. Tests require `PYTHONPATH` pointing to the repo root.
