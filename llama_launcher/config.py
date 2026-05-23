@@ -108,12 +108,18 @@ def _normalize_mtp(item: dict) -> None:
                 item["spec_draft_n_max"] = 2
 
 
-def load_global() -> GlobalSettings:
-    ensure_state()
-    if not GLOBAL_FILE.exists():
+# ---------------------------------------------------------------------------
+# Shared persistence helpers (accept explicit file paths)
+# ---------------------------------------------------------------------------
+
+
+def _load_global_from_file(global_file_path: Path) -> GlobalSettings:
+    """Load global settings from an arbitrary file path."""
+    global_file_path.parent.mkdir(parents=True, exist_ok=True)
+    if not global_file_path.exists():
         return GlobalSettings()
     try:
-        data = json.loads(GLOBAL_FILE.read_text(encoding="utf-8"))
+        data = json.loads(global_file_path.read_text(encoding="utf-8"))
         return GlobalSettings(
             llama_server_path=data.get("llama_server_path", ""),
             model_dirs=data.get("model_dirs", []),
@@ -124,17 +130,21 @@ def load_global() -> GlobalSettings:
         return GlobalSettings()
 
 
-def save_global(settings: GlobalSettings) -> None:
-    ensure_state()
-    GLOBAL_FILE.write_text(json.dumps(asdict(settings), indent=2), encoding="utf-8")
+def _save_global_to_file(global_file_path: Path, settings: GlobalSettings) -> None:
+    """Save global settings to an arbitrary file path."""
+    global_file_path.parent.mkdir(parents=True, exist_ok=True)
+    global_file_path.write_text(
+        json.dumps(asdict(settings), indent=2), encoding="utf-8"
+    )
 
 
-def load_profiles() -> List[Profile]:
-    ensure_state()
-    if not PROFILES_FILE.exists():
+def _load_profiles_from_file(profiles_file_path: Path) -> List[Profile]:
+    """Load profiles from an arbitrary file path."""
+    profiles_file_path.parent.mkdir(parents=True, exist_ok=True)
+    if not profiles_file_path.exists():
         return [Profile()]
     try:
-        raw = json.loads(PROFILES_FILE.read_text(encoding="utf-8"))
+        raw = json.loads(profiles_file_path.read_text(encoding="utf-8"))
         entries = raw.get("profiles", [])
         profiles: List[Profile] = []
         for item in entries:
@@ -152,7 +162,33 @@ def load_profiles() -> List[Profile]:
         return [Profile()]
 
 
-def save_profiles(profiles: List[Profile]) -> None:
-    ensure_state()
+def _save_profiles_to_file(
+    profiles_file_path: Path, profiles: List[Profile]
+) -> None:
+    """Save profiles to an arbitrary file path."""
+    profiles_file_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"profiles": [asdict(p) for p in profiles]}
-    PROFILES_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    profiles_file_path.write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Module-level convenience wrappers (use APP_DIR paths)
+# ---------------------------------------------------------------------------
+
+
+def load_global() -> GlobalSettings:
+    return _load_global_from_file(GLOBAL_FILE)
+
+
+def save_global(settings: GlobalSettings) -> None:
+    _save_global_to_file(GLOBAL_FILE, settings)
+
+
+def load_profiles() -> List[Profile]:
+    return _load_profiles_from_file(PROFILES_FILE)
+
+
+def save_profiles(profiles: List[Profile]) -> None:
+    _save_profiles_to_file(PROFILES_FILE, profiles)

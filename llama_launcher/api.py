@@ -1,7 +1,5 @@
 """Service facade for LLama Launcher core operations."""
-import json
 import threading
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -12,6 +10,10 @@ from llama_launcher import process
 from llama_launcher.config import (
     APP_DIR,
     DEFAULT_LLAMA_SERVER,
+    _load_global_from_file,
+    _load_profiles_from_file,
+    _save_global_to_file,
+    _save_profiles_to_file,
     load_global as _config_load_global,
     load_profiles as _config_load_profiles,
     save_global as _config_save_global,
@@ -19,20 +21,6 @@ from llama_launcher.config import (
 )
 from llama_launcher.models import GlobalSettings, LlamaOption, Profile
 from llama_launcher.options import load_options_from_exe, resolve_llama_server_path
-
-
-def _safe_int(value, default: int = 0) -> int:
-    """Return *value* as int only if it is a genuine int (not bool)."""
-    if isinstance(value, bool) or not isinstance(value, int):
-        return default
-    return value
-
-
-def _safe_str(value, default: str = "") -> str:
-    """Return *value* as str only if it is a genuine str."""
-    if not isinstance(value, str):
-        return default
-    return value
 
 
 def _coerce_bool(value, field_name: str) -> bool:
@@ -73,79 +61,6 @@ def _coerce_float(value, field_name: str) -> float:
     raise ValueError(f"{field_name} must be a number")
 
 
-def _safe_bool(value, default: bool = False) -> bool:
-    """Return *value* as bool; coerce ``"true"``/``"false"`` strings gracefully."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() == "true"
-    return default
-
-
-def _normalize_mtp(item: dict) -> None:
-    """Normalize MTP fields on a raw profile dict before ``Profile(**item)``.
-
-    1. Migrate legacy ``--spec-type draft-mtp`` from advanced settings.
-    2. Migrate legacy ``--spec-draft-n-max`` from advanced settings.
-    3. Coerce ``enable_mtp`` to bool and ``spec_draft_n_max`` to int.
-    4. Replace malformed advanced_favorites/advanced_values with safe defaults.
-    """
-    adv_favs_raw = item.get("advanced_favorites")
-    adv_vals_raw = item.get("advanced_values")
-
-    # Replace malformed types with safe defaults before any migration
-    if not isinstance(adv_favs_raw, list):
-        item["advanced_favorites"] = []
-        adv_favs_raw = item["advanced_favorites"]
-    if not isinstance(adv_vals_raw, dict):
-        item["advanced_values"] = {}
-        adv_vals_raw = item["advanced_values"]
-
-    # -- legacy migration --------------------------------------------------
-    has_legacy_spec_type = False
-    legacy_draft_n_max = None
-
-    if "--spec-type" in adv_favs_raw or "--spec-type" in adv_vals_raw:
-        val = adv_vals_raw.get("--spec-type", "")
-        if val and val.strip() == "draft-mtp":
-            has_legacy_spec_type = True
-
-    if "--spec-draft-n-max" in adv_favs_raw or "--spec-draft-n-max" in adv_vals_raw:
-        raw = adv_vals_raw.get("--spec-draft-n-max", "")
-        if raw:
-            try:
-                legacy_draft_n_max = int(raw.strip())
-            except (ValueError, TypeError):
-                pass
-
-    if has_legacy_spec_type:
-        item["enable_mtp"] = True
-        if "--spec-type" in adv_favs_raw:
-            adv_favs_raw.remove("--spec-type")
-        adv_vals_raw.pop("--spec-type", None)
-
-    if legacy_draft_n_max is not None:
-        item["spec_draft_n_max"] = legacy_draft_n_max
-        if "--spec-draft-n-max" in adv_favs_raw:
-            adv_favs_raw.remove("--spec-draft-n-max")
-        adv_vals_raw.pop("--spec-draft-n-max", None)
-
-    # -- type coercion -----------------------------------------------------
-    if "enable_mtp" in item:
-        item["enable_mtp"] = _safe_bool(item["enable_mtp"])
-
-    if "spec_draft_n_max" in item:
-        val = item["spec_draft_n_max"]
-        if isinstance(val, bool) or not isinstance(val, int):
-            if isinstance(val, str):
-                try:
-                    item["spec_draft_n_max"] = int(val.strip())
-                except (ValueError, TypeError):
-                    item["spec_draft_n_max"] = 2
-            else:
-                item["spec_draft_n_max"] = 2
-
-
 class LlamaLauncherService:
     """Facade encapsulating all core LLama Launcher operations."""
 
@@ -167,52 +82,16 @@ class LlamaLauncherService:
         self._state_dir.mkdir(parents=True, exist_ok=True)
 
     def _load_global_path(self) -> GlobalSettings:
-        self._ensure_state()
-        if not self._global_file.exists():
-            return GlobalSettings()
-        try:
-            data = json.loads(self._global_file.read_text(encoding="utf-8"))
-            return GlobalSettings(
-                llama_server_path=data.get("llama_server_path", ""),
-                model_dirs=data.get("model_dirs", []),
-                api_host=_safe_str(data.get("api_host"), "127.0.0.1"),
-                api_port=_safe_int(data.get("api_port"), 0),
-            )
-        except Exception:
-            return GlobalSettings()
+        return _load_global_from_file(self._global_file)
 
     def _save_global_path(self, settings: GlobalSettings) -> None:
-        self._ensure_state()
-        self._global_file.write_text(
-            json.dumps(asdict(settings), indent=2), encoding="utf-8"
-        )
+        _save_global_to_file(self._global_file, settings)
 
     def _load_profiles_path(self) -> List[Profile]:
-        self._ensure_state()
-        if not self._profiles_file.exists():
-            return [Profile()]
-        try:
-            raw = json.loads(self._profiles_file.read_text(encoding="utf-8"))
-            entries = raw.get("profiles", [])
-            profiles: List[Profile] = []
-            for item in entries:
-                if not isinstance(item, dict):
-                    continue
-                if "flash_attn" in item and "flash_attn_mode" not in item:
-                    item["flash_attn_mode"] = "on" if item.get("flash_attn") else "off"
-                item.pop("flash_attn", None)
-                item.setdefault("advanced_values", {})
-                item.setdefault("advanced_favorites", [])
-                _normalize_mtp(item)
-                profiles.append(Profile(**item))
-            return profiles or [Profile()]
-        except Exception:
-            return [Profile()]
+        return _load_profiles_from_file(self._profiles_file)
 
     def _save_profiles_path(self, profiles: List[Profile]) -> None:
-        self._ensure_state()
-        payload = {"profiles": [asdict(p) for p in profiles]}
-        self._profiles_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        _save_profiles_to_file(self._profiles_file, profiles)
 
     # -- profiles ----------------------------------------------------------
 
