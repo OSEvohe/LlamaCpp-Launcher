@@ -13,10 +13,11 @@ a{color:#58a6ff;text-decoration:none}
 a:hover{text-decoration:underline}
 
 /* ---- layout ---- */
-.app{max-width:1100px;margin:0 auto;padding:16px}
+.app{max-width:1100px;margin:0 auto;padding:16px;padding-bottom:52px}
 .header{display:flex;align-items:center;justify-content:space-between;padding:8px 0 16px;
   border-bottom:1px solid #30363d;margin-bottom:16px}
 .header h1{font-size:20px;font-weight:600;color:#f0f6fc}
+.header-controls{display:flex;align-items:center;gap:6px}
 .badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600}
 .badge.green{background:#238636;color:#fff}
 .badge.red{background:#da3633;color:#fff}
@@ -86,6 +87,19 @@ tr:hover td{background:#161b22}
 .profile-list li:hover,.profile-list li.selected{border-color:#58a6ff;background:#161b22}
 .profile-list li .pname{font-weight:600;color:#f0f6fc}
 .profile-list li .pmodel{font-size:12px;color:#8b949e}
+.profile-list li .active-badge{display:inline-block;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:700;
+  background:#238636;color:#fff;margin-left:6px;letter-spacing:.3px}
+
+/* ---- fixed monitoring footer ---- */
+.mon-footer{position:fixed;bottom:0;left:0;right:0;z-index:100;
+  background:#0d1117;border-top:1px solid #30363d;
+  display:flex;align-items:center;gap:16px;padding:6px 16px;
+  font-size:13px;color:#c9d1d9;white-space:nowrap;overflow-x:auto}
+.mon-footer .mon-item{display:flex;align-items:baseline;gap:4px}
+.mon-footer .mon-label{font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.3px}
+.mon-footer .mon-val{font-size:13px;font-weight:600;color:#f0f6fc}
+.mon-footer .mon-val.green{color:#3fb950}
+.mon-footer .mon-val.red{color:#f85149}
 
 /* ---- misc ---- */
 .mt-8{margin-top:8px}
@@ -132,61 +146,26 @@ input.switch:checked::after{transform:translateX(18px);background:#fff}
   <!-- Header -->
   <div class="header">
     <h1>LLama Launcher</h1>
-    <span id="statusBadge" class="badge gray">checking...</span>
+    <div class="header-controls">
+      <button class="btn primary small" onclick="doLaunch()">&#9654; Launch</button>
+      <button class="btn danger small" onclick="doStop()">&#9632; Stop</button>
+      <button class="btn small" onclick="doRestart()">&#8635; Restart</button>
+      <span id="statusBadge" class="badge gray">checking...</span>
+    </div>
   </div>
+  <div id="headerResult" class="text-sm" style="margin-bottom:8px"></div>
 
   <!-- Tabs -->
   <div class="tabs" id="tabs">
-    <button class="tab-btn active" data-tab="monitoring">Monitoring</button>
-    <button class="tab-btn" data-tab="controls">Controls</button>
-    <button class="tab-btn" data-tab="profiles">Profiles</button>
+    <button class="tab-btn active" data-tab="profiles">Profiles</button>
     <button class="tab-btn" data-tab="settings">Settings</button>
     <button class="tab-btn" data-tab="logs">Logs</button>
     <button class="tab-btn" data-tab="models">Models</button>
     <button class="tab-btn" data-tab="advanced">Advanced</button>
   </div>
 
-  <!-- ==================== MONITORING ==================== -->
-  <div class="tab-panel active" id="panel-monitoring">
-    <div class="card">
-      <h2>System Monitoring</h2>
-      <div class="grid grid-4" id="monGrid">
-        <div class="stat"><div class="label">RAM Used</div><div class="value" id="monRamUsed">&mdash;</div></div>
-        <div class="stat"><div class="label">RAM Total</div><div class="value" id="monRamTotal">&mdash;</div></div>
-        <div class="stat"><div class="label">VRAM Used</div><div class="value" id="monVramUsed">&mdash;</div></div>
-        <div class="stat"><div class="label">VRAM Total</div><div class="value" id="monVramTotal">&mdash;</div></div>
-      </div>
-      <div class="grid grid-3 mt-12">
-        <div class="stat"><div class="label">Process RAM</div><div class="value" id="monProcessRam">&mdash;</div></div>
-        <div class="stat"><div class="label">PID</div><div class="value" id="monPid">&mdash;</div></div>
-        <div class="stat"><div class="label">Status</div><div class="value" id="monStatus">&mdash;</div></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ==================== CONTROLS ==================== -->
-  <div class="tab-panel" id="panel-controls">
-    <div class="card">
-      <h2>Server Controls</h2>
-      <div class="form-row">
-        <label>Profile Index</label>
-        <select id="ctrlProfileIdx"><option value="0">0</option></select>
-      </div>
-      <div class="form-row">
-        <label>llama-server.exe Path (optional override)</label>
-        <input id="ctrlExePath" type="text" placeholder="leave blank to use settings value">
-      </div>
-      <div class="btn-group">
-        <button class="btn primary" onclick="doLaunch()">&#9654; Launch</button>
-        <button class="btn danger" onclick="doStop()">&#9632; Stop</button>
-        <button class="btn" onclick="doRestart()">&#8635; Restart</button>
-      </div>
-      <div id="ctrlResult" class="mt-8 text-sm"></div>
-    </div>
-  </div>
-
   <!-- ==================== PROFILES ==================== -->
-  <div class="tab-panel" id="panel-profiles">
+  <div class="tab-panel active" id="panel-profiles">
     <div class="grid grid-2">
       <!-- list -->
       <div class="card">
@@ -328,6 +307,15 @@ input.switch:checked::after{transform:translateX(18px);background:#fff}
 
 </div><!-- /app -->
 
+<!-- Fixed monitoring footer -->
+<div class="mon-footer" id="monFooter">
+  <div class="mon-item"><span class="mon-label">Status</span><span class="mon-val" id="footStatus">&mdash;</span></div>
+  <div class="mon-item"><span class="mon-label">PID</span><span class="mon-val" id="footPid">&mdash;</span></div>
+  <div class="mon-item"><span class="mon-label">RAM</span><span class="mon-val" id="footRamUsed">&mdash;</span><span class="mon-label">/</span><span class="mon-val" id="footRamTotal">&mdash;</span></div>
+  <div class="mon-item"><span class="mon-label">VRAM</span><span class="mon-val" id="footVramUsed">&mdash;</span><span class="mon-label">/</span><span class="mon-val" id="footVramTotal">&mdash;</span></div>
+  <div class="mon-item"><span class="mon-label">Proc RAM</span><span class="mon-val" id="footProcessRam">&mdash;</span></div>
+</div>
+
 <script>
 /* ================================================================
    LLama Launcher Dashboard - vanilla JS, no dependencies
@@ -351,6 +339,9 @@ function show(el, msg, isError) {
   el.className = "mt-8 text-sm" + (isError ? " error-msg" : "");
 }
 
+// ---- state ----
+let selectedProfileIdx = 0;
+
 // ---- tabs ----
 $$('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -360,12 +351,10 @@ $$('.tab-btn').forEach(btn => {
     const tab = btn.dataset.tab;
     $(`#panel-${tab}`).classList.add('active');
     // lazy-load data on first tab visit
-    if (tab === 'monitoring') fetchMonitoring();
     if (tab === 'profiles') fetchProfiles();
     if (tab === 'settings') fetchSettings();
     if (tab === 'logs' && !logPollingActive) { startLogPolling(); }
     if (tab === 'models') fetchModels();
-    if (tab === 'controls') refreshControlProfileIdx();
     if (tab === 'advanced') initAdvancedTab();
   });
 });
@@ -388,78 +377,72 @@ async function updateStatusBadge() {
   }
 }
 
-// ---- monitoring ----
+// ---- monitoring (updates fixed footer) ----
 async function fetchMonitoring() {
   try {
     const d = await api('/api/monitoring');
-    $('#monRamUsed').textContent = d.ram.used_human || '0 B';
-    $('#monRamTotal').textContent = d.ram.total_human || '0 B';
-    $('#monVramUsed').textContent = d.vram.used_human || '0 B';
-    $('#monVramTotal').textContent = d.vram.total_human || '0 B';
-    $('#monProcessRam').textContent = d.process_ram_human || '0 B';
-    $('#monPid').textContent = d.pid != null ? d.pid : '—';
-    $('#monStatus').textContent = d.running ? 'Running' : 'Stopped';
-    $('#monStatus').style.color = d.running ? '#3fb950' : '#f85149';
+    $('#footRamUsed').textContent = d.ram.used_human || '0 B';
+    $('#footRamTotal').textContent = d.ram.total_human || '0 B';
+    $('#footVramUsed').textContent = d.vram.used_human || '0 B';
+    $('#footVramTotal').textContent = d.vram.total_human || '0 B';
+    $('#footProcessRam').textContent = d.process_ram_human || '0 B';
+    $('#footPid').textContent = d.pid != null ? d.pid : '—';
+    const sEl = $('#footStatus');
+    sEl.textContent = d.running ? 'Running' : 'Stopped';
+    sEl.className = 'mon-val ' + (d.running ? 'green' : 'red');
   } catch (e) {
-    $('#monRamUsed').textContent = 'err';
+    const sEl = $('#footStatus');
+    sEl.textContent = 'err';
+    sEl.className = 'mon-val red';
   }
 }
 
-// ---- controls ----
-function refreshControlProfileIdx() {
-  const sel = $('#ctrlProfileIdx');
-  const val = sel.value;
-  api('/api/profiles').then(profiles => {
-    sel.innerHTML = '';
-    profiles.forEach((p, i) => {
-      const opt = document.createElement('option');
-      opt.value = i;
-      opt.textContent = `${i}: ${p.name || 'unnamed'}`;
-      sel.appendChild(opt);
-    });
-    if (sel.querySelector(`option[value="${val}"]`)) sel.value = val;
-  }).catch(() => {});
+// ---- controls (header buttons) ----
+function headerResult(msg, isError) {
+  const el = $('#headerResult');
+  el.textContent = msg;
+  el.className = 'text-sm' + (isError ? ' error-msg' : '');
 }
 
 async function doLaunch() {
-  const el = $('#ctrlResult');
-  el.textContent = '';
+  headerResult('', false);
   try {
     const body = {
-      profile_index: parseInt($('#ctrlProfileIdx').value, 10),
-      exe_path: $('#ctrlExePath').value.trim() || undefined
+      profile_index: selectedProfileIdx,
+      exe_path: undefined
     };
     const d = await api('/api/launch', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
-    show(el, `Launched PID ${d.pid}`, false);
+    headerResult(`Launched PID ${d.pid}`, false);
     updateStatusBadge();
     fetchMonitoring();
-  } catch (e) { show(el, e.message, true); }
+    fetchProfiles();
+  } catch (e) { headerResult(e.message, true); }
 }
 
 async function doStop() {
-  const el = $('#ctrlResult');
-  el.textContent = '';
+  headerResult('', false);
   try {
     const d = await api('/api/stop', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
-    show(el, d.stopped ? `Stopped PID ${d.pid}` : 'Nothing to stop', false);
+    headerResult(d.stopped ? `Stopped PID ${d.pid}` : 'Nothing to stop', false);
     updateStatusBadge();
     fetchMonitoring();
-  } catch (e) { show(el, e.message, true); }
+    fetchProfiles();
+  } catch (e) { headerResult(e.message, true); }
 }
 
 async function doRestart() {
-  const el = $('#ctrlResult');
-  el.textContent = '';
+  headerResult('', false);
   try {
     const body = {
-      profile_index: parseInt($('#ctrlProfileIdx').value, 10),
-      exe_path: $('#ctrlExePath').value.trim() || undefined
+      profile_index: selectedProfileIdx,
+      exe_path: undefined
     };
     const d = await api('/api/restart', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
-    show(el, `Restarted PID ${d.pid}`, false);
+    headerResult(`Restarted PID ${d.pid}`, false);
     updateStatusBadge();
     fetchMonitoring();
-  } catch (e) { show(el, e.message, true); }
+    fetchProfiles();
+  } catch (e) { headerResult(e.message, true); }
 }
 
 // ---- profiles ----
@@ -468,13 +451,20 @@ let _profilesCache = [];
 async function fetchProfiles() {
   try {
     _profilesCache = await api('/api/profiles');
+    if (_profilesCache.length === 0) {
+      selectedProfileIdx = 0;
+    } else {
+      selectedProfileIdx = Math.min(selectedProfileIdx, _profilesCache.length - 1);
+    }
     const ul = $('#profileList');
     ul.innerHTML = '';
     _profilesCache.forEach((p, i) => {
       const li = document.createElement('li');
-      li.innerHTML = `<span><span class="pname">${esc(p.name)}</span> <span class="pmodel">${esc(p.model_path || 'no model')}</span></span>
+      const isActive = (i === selectedProfileIdx);
+      const badge = isActive ? '<span class="active-badge">&#9654; active</span>' : '';
+      li.innerHTML = `<span><span class="pname">${esc(p.name)}</span>${badge} <span class="pmodel">${esc(p.model_path || 'no model')}</span></span>
         <span class="text-sm">${i}</span>`;
-      li.addEventListener('click', () => openProfileEditor(i));
+      li.addEventListener('click', () => { selectedProfileIdx = i; openProfileEditor(i); fetchProfiles(); });
       ul.appendChild(li);
     });
   } catch (e) {
@@ -1016,6 +1006,7 @@ updateStatusBadge();
 setInterval(updateStatusBadge, 5000);
 setInterval(fetchMonitoring, 8000);
 fetchMonitoring();
+fetchProfiles();
 </script>
 </body>
 </html>
