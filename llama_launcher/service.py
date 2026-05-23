@@ -147,26 +147,14 @@ if _has_pywin32:
 
 
 def _resolve_service_api_settings() -> tuple[str, int]:
-    """Resolve API host/port from persisted global settings."""
-    from llama_launcher.api import LlamaLauncherService
+    """Resolve API host/port from persisted global settings.
 
-    svc = LlamaLauncherService()
-    settings = svc.load_global()
+    Delegates to the canonical resolver in ``llama_launcher.main`` with no
+    CLI overrides (service context has no CLI arguments).
+    """
+    from llama_launcher.main import _resolve_api_settings
 
-    host = settings.api_host or "127.0.0.1"
-    raw_port = settings.api_port
-    try:
-        port = int(raw_port)
-    except (TypeError, ValueError):
-        port = 0
-
-    if port < 0 or port > 65535:
-        port = 0
-
-    if port <= 0:
-        port = 7890
-
-    return host, port
+    return _resolve_api_settings(None, None)
 
 
 # ---------------------------------------------------------------------------
