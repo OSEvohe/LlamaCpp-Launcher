@@ -1,12 +1,10 @@
-"""Headless startup/shutdown and bind-robustness tests for ``llama_launcher.main``.
+"""API server startup and bind-robustness tests for ``llama_launcher.main``.
 
-Uses ``unittest.mock`` only — no real TUI launch, no network bind required,
-no ``llama_launcher.ui.app`` (textual) import.
+Uses ``unittest.mock`` only — no real network bind required
 """
 import io
 import sys
-import types
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from llama_launcher.api import LlamaLauncherService
 from llama_launcher.main import _resolve_api_settings, main
@@ -17,13 +15,22 @@ from llama_launcher.models import GlobalSettings
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_api_settings_defaults() -> None:
-    """No CLI overrides, no stored settings → 127.0.0.1:0 (non-headless)."""
+def test_default_port_is_7890() -> None:
+    """No stored port → defaults to 7890."""
     with patch.object(LlamaLauncherService, "__init__", lambda self, app_dir=None: None), \
          patch.object(LlamaLauncherService, "load_global", return_value=GlobalSettings()):
-        host, port = _resolve_api_settings(None, None, headless=False)
+        host, port = _resolve_api_settings(None, None)
     assert host == "127.0.0.1"
-    assert port == 0
+    assert port == 7890
+
+
+def test_resolve_api_settings_defaults() -> None:
+    """No CLI overrides, no stored settings → 127.0.0.1:7890."""
+    with patch.object(LlamaLauncherService, "__init__", lambda self, app_dir=None: None), \
+         patch.object(LlamaLauncherService, "load_global", return_value=GlobalSettings()):
+        host, port = _resolve_api_settings(None, None)
+    assert host == "127.0.0.1"
+    assert port == 7890
 
 
 def test_resolve_api_settings_cli_port_overrides_stored() -> None:
@@ -31,7 +38,7 @@ def test_resolve_api_settings_cli_port_overrides_stored() -> None:
     stored = GlobalSettings(api_host="0.0.0.0", api_port=9999)
     with patch.object(LlamaLauncherService, "__init__", lambda self, app_dir=None: None), \
          patch.object(LlamaLauncherService, "load_global", return_value=stored):
-        host, port = _resolve_api_settings(None, 8080, headless=False)
+        host, port = _resolve_api_settings(None, 8080)
     assert host == "0.0.0.0"
     assert port == 8080
 
@@ -41,18 +48,18 @@ def test_resolve_api_settings_cli_host_overrides_stored() -> None:
     stored = GlobalSettings(api_host="0.0.0.0", api_port=9999)
     with patch.object(LlamaLauncherService, "__init__", lambda self, app_dir=None: None), \
          patch.object(LlamaLauncherService, "load_global", return_value=stored):
-        host, port = _resolve_api_settings("10.0.0.1", None, headless=False)
+        host, port = _resolve_api_settings("10.0.0.1", None)
     assert host == "10.0.0.1"
     assert port == 9999
 
 
-def test_resolve_api_settings_port_zero_clamped_non_headless() -> None:
-    """Port 0 stays 0 in non-headless mode (API will be skipped)."""
+def test_resolve_api_settings_port_zero_defaults_to_7890() -> None:
+    """Port 0 defaults to 7890."""
     stored = GlobalSettings(api_port=0)
     with patch.object(LlamaLauncherService, "__init__", lambda self, app_dir=None: None), \
          patch.object(LlamaLauncherService, "load_global", return_value=stored):
-        host, port = _resolve_api_settings(None, None, headless=False)
-    assert port == 0
+        host, port = _resolve_api_settings(None, None)
+    assert port == 7890
 
 
 def test_resolve_api_settings_port_one_valid() -> None:
@@ -60,7 +67,7 @@ def test_resolve_api_settings_port_one_valid() -> None:
     stored = GlobalSettings(api_port=1)
     with patch.object(LlamaLauncherService, "__init__", lambda self, app_dir=None: None), \
          patch.object(LlamaLauncherService, "load_global", return_value=stored):
-        host, port = _resolve_api_settings(None, None, headless=False)
+        host, port = _resolve_api_settings(None, None)
     assert port == 1
 
 
@@ -69,112 +76,62 @@ def test_resolve_api_settings_port_65535_valid() -> None:
     stored = GlobalSettings(api_port=65535)
     with patch.object(LlamaLauncherService, "__init__", lambda self, app_dir=None: None), \
          patch.object(LlamaLauncherService, "load_global", return_value=stored):
-        host, port = _resolve_api_settings(None, None, headless=False)
+        host, port = _resolve_api_settings(None, None)
     assert port == 65535
 
 
 def test_resolve_api_settings_port_65536_clamped() -> None:
-    """Port 65536 exceeds max → clamped to 0."""
+    """Port 65536 exceeds max → clamped to 0 then defaulted to 7890."""
     stored = GlobalSettings(api_port=65536)
     with patch.object(LlamaLauncherService, "__init__", lambda self, app_dir=None: None), \
          patch.object(LlamaLauncherService, "load_global", return_value=stored):
-        host, port = _resolve_api_settings(None, None, headless=False)
-    assert port == 0
+        host, port = _resolve_api_settings(None, None)
+    assert port == 7890
 
 
 def test_resolve_api_settings_negative_port_clamped() -> None:
-    """Negative port → clamped to 0."""
+    """Negative port → clamped to 0 then defaulted to 7890."""
     stored = GlobalSettings(api_port=-1)
     with patch.object(LlamaLauncherService, "__init__", lambda self, app_dir=None: None), \
          patch.object(LlamaLauncherService, "load_global", return_value=stored):
-        host, port = _resolve_api_settings(None, None, headless=False)
-    assert port == 0
+        host, port = _resolve_api_settings(None, None)
+    assert port == 7890
 
 
 def test_resolve_api_settings_cli_port_negative_clamped() -> None:
-    """CLI negative port → clamped to 0 (non-headless)."""
+    """CLI negative port → clamped to 0 then defaulted to 7890."""
     with patch.object(LlamaLauncherService, "__init__", lambda self, app_dir=None: None), \
          patch.object(LlamaLauncherService, "load_global", return_value=GlobalSettings()):
-        host, port = _resolve_api_settings(None, -5, headless=False)
+        host, port = _resolve_api_settings(None, -5)
+    assert port == 7890
+
+
+def test_cli_port_zero_keeps_ephemeral() -> None:
+    """Explicit --api-port 0 preserves ephemeral port (port 0), not defaulted to 7890."""
+    with patch.object(LlamaLauncherService, "__init__", lambda self, app_dir=None: None), \
+         patch.object(LlamaLauncherService, "load_global", return_value=GlobalSettings()):
+        host, port = _resolve_api_settings(None, 0)
     assert port == 0
 
 
 def test_resolve_api_settings_invalid_stored_port_clamped() -> None:
-    """Stored port that is not an int (e.g. None) → clamped to 0."""
+    """Stored port that is not an int (e.g. None) → clamped to 0 then defaulted to 7890."""
     stored = GlobalSettings()
     stored.api_port = None  # type: ignore[assignment]
     with patch.object(LlamaLauncherService, "__init__", lambda self, app_dir=None: None), \
          patch.object(LlamaLauncherService, "load_global", return_value=stored):
-        host, port = _resolve_api_settings(None, None, headless=False)
-    assert port == 0
-
-
-# ---------------------------------------------------------------------------
-# 2. Headless default port fallback (7890)
-# ---------------------------------------------------------------------------
-
-
-def test_headless_fallback_7890_no_port() -> None:
-    """Headless with no stored port → defaults to 7890."""
-    with patch.object(LlamaLauncherService, "__init__", lambda self, app_dir=None: None), \
-         patch.object(LlamaLauncherService, "load_global", return_value=GlobalSettings()):
-        host, port = _resolve_api_settings(None, None, headless=True)
+        host, port = _resolve_api_settings(None, None)
     assert port == 7890
 
 
-def test_headless_fallback_7890_zero_port() -> None:
-    """Headless with stored port 0 → defaults to 7890."""
-    stored = GlobalSettings(api_port=0)
-    with patch.object(LlamaLauncherService, "__init__", lambda self, app_dir=None: None), \
-         patch.object(LlamaLauncherService, "load_global", return_value=stored):
-        host, port = _resolve_api_settings(None, None, headless=True)
-    assert port == 7890
-
-
-def test_headless_fallback_7890_negative_port() -> None:
-    """Headless with negative stored port → defaults to 7890."""
-    stored = GlobalSettings(api_port=-100)
-    with patch.object(LlamaLauncherService, "__init__", lambda self, app_dir=None: None), \
-         patch.object(LlamaLauncherService, "load_global", return_value=stored):
-        host, port = _resolve_api_settings(None, None, headless=True)
-    assert port == 7890
-
-
-def test_headless_fallback_7890_invalid_stored_port() -> None:
-    """Headless with invalid (non-int) stored port → defaults to 7890."""
-    stored = GlobalSettings()
-    stored.api_port = None  # type: ignore[assignment]
-    with patch.object(LlamaLauncherService, "__init__", lambda self, app_dir=None: None), \
-         patch.object(LlamaLauncherService, "load_global", return_value=stored):
-        host, port = _resolve_api_settings(None, None, headless=True)
-    assert port == 7890
-
-
-def test_headless_cli_port_positive_no_fallback() -> None:
-    """Headless with valid CLI port → no fallback, use the CLI value."""
-    with patch.object(LlamaLauncherService, "__init__", lambda self, app_dir=None: None), \
-         patch.object(LlamaLauncherService, "load_global", return_value=GlobalSettings()):
-        host, port = _resolve_api_settings(None, 3000, headless=True)
-    assert port == 3000
-
-
-def test_headless_stored_port_positive_no_fallback() -> None:
-    """Headless with valid stored port → no fallback, use the stored value."""
-    stored = GlobalSettings(api_port=5000)
-    with patch.object(LlamaLauncherService, "__init__", lambda self, app_dir=None: None), \
-         patch.object(LlamaLauncherService, "load_global", return_value=stored):
-        host, port = _resolve_api_settings(None, None, headless=True)
-    assert port == 5000
-
-
 # ---------------------------------------------------------------------------
-# 3. Headless bind failure → concise error + sys.exit(1)
+# 2. Bind failure → concise error + sys.exit(1)
 # ---------------------------------------------------------------------------
 
 
-def test_headless_bind_failure_prints_error_and_exits() -> None:
-    """When _run_api_headless raises OSError, main prints a concise error and exits 1."""
-    def fake_run_api_headless(host, port):
+def test_bind_failure_prints_error_and_exits() -> None:
+    """When run_api_server raises OSError, main prints a concise error and exits 1."""
+    def fake_run_api_server(service, host, port):
         raise OSError("Address already in use")
 
     def _fake_exit(code=None):
@@ -182,8 +139,8 @@ def test_headless_bind_failure_prints_error_and_exits() -> None:
 
     with patch.object(sys, "exit", side_effect=_fake_exit), \
          patch("llama_launcher.main._resolve_api_settings", return_value=("127.0.0.1", 7890)), \
-         patch("llama_launcher.main._run_api_headless", fake_run_api_headless), \
-         patch("sys.argv", ["launcher", "--headless"]):
+         patch("llama_launcher.server.run_api_server", fake_run_api_server), \
+         patch("sys.argv", ["launcher"]):
         out = io.StringIO()
         with patch("sys.stdout", out):
             try:
@@ -200,88 +157,25 @@ def test_headless_bind_failure_prints_error_and_exits() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4. Sidecar bind failure in non-headless → does NOT block TUI path
-# ---------------------------------------------------------------------------
-
-
-def test_sidecar_bind_failure_non_headless_continues() -> None:
-    """When _start_api_sidecar raises OSError, main continues to TUI import."""
-    tui_run_called = False
-
-    def fake_start_api_sidecar(host, port):
-        raise OSError("Address already in use")
-
-    def fake_resolve_api_settings(cli_host, cli_port, headless):
-        return ("127.0.0.1", 8080)
-
-    def fake_app_run():
-        nonlocal tui_run_called
-        tui_run_called = True
-
-    # Inject a fake UI module to avoid importing the real one (textual dep).
-    fake_ui = types.ModuleType("llama_launcher.ui.app")
-    fake_ui.LlamaLauncherApp = MagicMock()
-    fake_ui.LlamaLauncherApp.return_value.run = fake_app_run
-
-    with patch("llama_launcher.main._resolve_api_settings", fake_resolve_api_settings), \
-         patch("llama_launcher.main._start_api_sidecar", fake_start_api_sidecar), \
-         patch.dict("sys.modules", {"llama_launcher.ui.app": fake_ui}), \
-         patch("sys.argv", ["launcher"]):
-        main()
-
-    assert tui_run_called, "TUI .run() should have been called despite sidecar failure"
-
-
-def test_sidecar_zero_port_non_headless_skips_sidecar() -> None:
-    """When resolved port is 0 in non-headless, sidecar is skipped entirely."""
-    sidecar_called = False
-
-    def fake_start_api_sidecar(host, port):
-        nonlocal sidecar_called
-        sidecar_called = True
-
-    def fake_resolve_api_settings(cli_host, cli_port, headless):
-        return ("127.0.0.1", 0)
-
-    # Inject a fake UI module to avoid importing the real one (textual dep).
-    fake_ui = types.ModuleType("llama_launcher.ui.app")
-    fake_ui.LlamaLauncherApp = MagicMock()
-
-    with patch("llama_launcher.main._resolve_api_settings", fake_resolve_api_settings), \
-         patch("llama_launcher.main._start_api_sidecar", fake_start_api_sidecar), \
-         patch.dict("sys.modules", {"llama_launcher.ui.app": fake_ui}), \
-         patch("sys.argv", ["launcher"]):
-        main()
-
-    assert not sidecar_called, "sidecar should NOT be called when port is 0"
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 
 if __name__ == "__main__":
     tests = [
+        test_default_port_is_7890,
         test_resolve_api_settings_defaults,
         test_resolve_api_settings_cli_port_overrides_stored,
         test_resolve_api_settings_cli_host_overrides_stored,
-        test_resolve_api_settings_port_zero_clamped_non_headless,
+        test_resolve_api_settings_port_zero_defaults_to_7890,
         test_resolve_api_settings_port_one_valid,
         test_resolve_api_settings_port_65535_valid,
         test_resolve_api_settings_port_65536_clamped,
         test_resolve_api_settings_negative_port_clamped,
         test_resolve_api_settings_cli_port_negative_clamped,
+        test_cli_port_zero_keeps_ephemeral,
         test_resolve_api_settings_invalid_stored_port_clamped,
-        test_headless_fallback_7890_no_port,
-        test_headless_fallback_7890_zero_port,
-        test_headless_fallback_7890_negative_port,
-        test_headless_fallback_7890_invalid_stored_port,
-        test_headless_cli_port_positive_no_fallback,
-        test_headless_stored_port_positive_no_fallback,
-        test_headless_bind_failure_prints_error_and_exits,
-        test_sidecar_bind_failure_non_headless_continues,
-        test_sidecar_zero_port_non_headless_skips_sidecar,
+        test_bind_failure_prints_error_and_exits,
     ]
 
     passed = 0
