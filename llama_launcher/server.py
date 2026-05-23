@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlparse
 _MAX_BODY = 1 * 1024 * 1024  # 1 MB
 
 _INDEX_RE = re.compile(r"^/api/profiles/(\d+)$")
+_DUPLICATE_RE = re.compile(r"^/api/profiles/(\d+)/duplicate$")
 
 # Path to the bundled dashboard HTML (sibling directory to this module).
 _DASHBOARD_PATH = os.path.join(
@@ -107,7 +108,11 @@ class _APIHandler(BaseHTTPRequestHandler):
         elif path == "/api/restart":
             self._handle_restart()
         else:
-            self._error(404, "not found")
+            m = _DUPLICATE_RE.match(f"/{path}" if not path.startswith("/") else path)
+            if m:
+                self._handle_post_duplicate(int(m.group(1)))
+            else:
+                self._error(404, "not found")
 
     def do_PUT(self) -> None:
         path = urlparse(self.path).path.rstrip("/") or "/"
@@ -219,6 +224,15 @@ class _APIHandler(BaseHTTPRequestHandler):
             self._error(404, f"profile index {index} out of range")
             return
         self._json_response(200, {"deleted": index})
+
+    def _handle_post_duplicate(self, index: int) -> None:
+        svc = self._service()
+        try:
+            dup = svc.duplicate_profile(index)
+        except IndexError:
+            self._error(404, f"profile index {index} out of range")
+            return
+        self._json_response(201, asdict(dup))
 
     # Settings
     def _handle_get_settings(self) -> None:

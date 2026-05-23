@@ -220,6 +220,7 @@ input.switch:checked::after{transform:translateX(18px);background:#fff}
         <div class="form-row"><label>Extra Args</label><input id="peExtraArgs" type="text"></div>
         <div class="btn-group">
           <button class="btn primary" onclick="doSaveProfile()">Save</button>
+          <button class="btn small" onclick="doDuplicateProfile()">&#8987; Duplicate</button>
           <button class="btn danger small" onclick="doDeleteProfile()">Delete</button>
           <button class="btn small" onclick="document.getElementById('profileEditor').style.display='none'">Cancel</button>
         </div>
@@ -571,6 +572,15 @@ async function doAddProfile() {
     fetchProfiles();
     syncAdvProfileIdx();
   } catch (e) { alert(e.message); }
+}
+
+async function doDuplicateProfile() {
+  const index = parseInt($('#peIndex').value, 10);
+  try {
+    await api(`/api/profiles/${index}/duplicate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+    fetchProfiles();
+    syncAdvProfileIdx();
+  } catch (e) { show($('#peResult'), e.message, true); }
 }
 
 // ---- settings ----

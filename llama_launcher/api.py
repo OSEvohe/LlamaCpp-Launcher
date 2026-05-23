@@ -248,6 +248,42 @@ class LlamaLauncherService:
                 return True
             return False
 
+    def duplicate_profile(self, index: int) -> Profile:
+        """Create a copy of the profile at *index* with a "(copy)" suffix."""
+        with self._lock:
+            profiles = self.load_profiles()
+            if not (0 <= index < len(profiles)):
+                raise IndexError(f"profile index {index} out of range")
+            src = profiles[index]
+            dup = Profile(
+                name=f"{src.name} (copy)",
+                model_path=src.model_path,
+                host=src.host,
+                port=src.port,
+                ctx_size=src.ctx_size,
+                threads=src.threads,
+                n_gpu_layers=src.n_gpu_layers,
+                temp=src.temp,
+                top_p=src.top_p,
+                top_k=src.top_k,
+                min_p=src.min_p,
+                presence_penalty=src.presence_penalty,
+                np=src.np,
+                batch_size=src.batch_size,
+                enable_mtp=src.enable_mtp,
+                spec_draft_n_max=src.spec_draft_n_max,
+                embeddings=src.embeddings,
+                flash_attn_mode=src.flash_attn_mode,
+                kv_cache_type=src.kv_cache_type,
+                extra_args=src.extra_args,
+                advanced_values=dict(src.advanced_values),
+                advanced_modes=dict(src.advanced_modes),
+                advanced_favorites=list(src.advanced_favorites),
+            )
+            profiles.append(dup)
+            self.save_profiles(profiles)
+            return dup
+
     def update_profile(self, index: int, profile_data: Dict[str, Any]) -> Profile:
         """Atomically read-modify-write a single profile under one lock."""
         with self._lock:

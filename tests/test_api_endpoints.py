@@ -437,6 +437,86 @@ def test_delete_profile_out_of_range_404() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Tests: POST /api/profiles/:index/duplicate
+# ---------------------------------------------------------------------------
+
+
+def test_post_duplicate_profile_201() -> None:
+    """POST /api/profiles/0/duplicate returns 201 with a copy."""
+    host, port, stop, server, thread, tmpdir = _make_server_with_profiles(
+        [Profile(name="source", model_path="/models/m.gguf", ctx_size=8192)]
+    )
+    try:
+        status, data = _request("POST", "/api/profiles/0/duplicate", host, port, body={})
+        assert status == 201
+        assert data["name"] == "source (copy)"
+        assert data["model_path"] == "/models/m.gguf"
+        assert data["ctx_size"] == 8192
+    finally:
+        stop.set()
+        server.server_close()
+        thread.join(timeout=2)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_post_duplicate_preserves_advanced_fields() -> None:
+    """Duplicate preserves advanced_favorites, advanced_values, and advanced_modes."""
+    host, port, stop, server, thread, tmpdir = _make_server_with_profiles(
+        [Profile(
+            name="src",
+            advanced_favorites=["--verbose"],
+            advanced_values={"--verbose": "1"},
+            advanced_modes={"--verbose": "flag"},
+        )]
+    )
+    try:
+        status, data = _request("POST", "/api/profiles/0/duplicate", host, port, body={})
+        assert status == 201
+        assert data["advanced_favorites"] == ["--verbose"]
+        assert data["advanced_values"] == {"--verbose": "1"}
+        assert data["advanced_modes"] == {"--verbose": "flag"}
+    finally:
+        stop.set()
+        server.server_close()
+        thread.join(timeout=2)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_post_duplicate_out_of_range_404() -> None:
+    """POST /api/profiles/99/duplicate returns 404 when index is out of range."""
+    host, port, stop, server, thread, tmpdir = _make_server_with_profiles(
+        [Profile(name="only")]
+    )
+    try:
+        status, data = _request("POST", "/api/profiles/99/duplicate", host, port, body={})
+        assert status == 404
+        assert "error" in data
+    finally:
+        stop.set()
+        server.server_close()
+        thread.join(timeout=2)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_post_duplicate_appends_new_profile() -> None:
+    """After duplicate, GET /api/profiles shows one extra profile."""
+    host, port, stop, server, thread, tmpdir = _make_server_with_profiles(
+        [Profile(name="a"), Profile(name="b")]
+    )
+    try:
+        _request("POST", "/api/profiles/1/duplicate", host, port, body={})
+        status, data = _request("GET", "/api/profiles", host, port)
+        assert status == 200
+        assert len(data) == 3
+        assert data[2]["name"] == "b (copy)"
+    finally:
+        stop.set()
+        server.server_close()
+        thread.join(timeout=2)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # Tests: GET /api/settings
 # ---------------------------------------------------------------------------
 
@@ -922,6 +1002,10 @@ if __name__ == "__main__":
         test_put_profile_partial_preserves_unrelated_fields,
         test_delete_profile_200,
         test_delete_profile_out_of_range_404,
+        test_post_duplicate_profile_201,
+        test_post_duplicate_preserves_advanced_fields,
+        test_post_duplicate_out_of_range_404,
+        test_post_duplicate_appends_new_profile,
         test_get_settings_200,
         test_put_settings_200,
         test_put_settings_invalid_api_port_400,
