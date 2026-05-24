@@ -259,11 +259,6 @@ impl LlamaLauncherService {
         if existing_pid > 0 && self.pid_file.exists() {
             std::fs::remove_file(&self.pid_file).ok();
         }
-        let mut state = self.state.write().expect("lock poisoned");
-        state.last_log_size = 0;
-        state.last_log_marker.clear();
-        drop(state);
-
         if self.log_out.exists() {
             std::fs::remove_file(&self.log_out).ok();
         }
