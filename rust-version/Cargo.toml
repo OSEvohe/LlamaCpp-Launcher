@@ -1,0 +1,18 @@
+[package]
+name = "llama-launcher"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["fs"] }
+winapi = { version = "0.3", features = ["winbase", "processthreadsapi", "winnt", "errhandlingapi", "sysinfoapi", "handleapi", "minwinbase", "fileapi"] }
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+
+[dev-dependencies]
+reqwest = { version = "0.11", features = ["json"] }
+tempfile = "3"
