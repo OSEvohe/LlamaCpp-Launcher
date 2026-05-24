@@ -759,6 +759,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "clap",
+ "once_cell",
  "regex",
  "reqwest",
  "serde",

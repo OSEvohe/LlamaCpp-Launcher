@@ -71,6 +71,8 @@ pub fn app(state: SharedState) -> Router {
         .route("/api/restart", post(post_restart))
         .route("/api/logs", get(get_logs))
         .route("/api/monitoring", get(get_monitoring))
+        .route("/api/perf", get(get_perf))
+        .route("/api/perf/reset", post(post_perf_reset))
         .route("/api/options", get(get_options))
         .route("/api/models", get(get_models))
         .route(
@@ -149,12 +151,13 @@ async fn get_logs(
     }))
 }
 
-async fn get_monitoring(State(state): State<SharedState>) -> Json<Value> {
+ async fn get_monitoring(State(state): State<SharedState>) -> Json<Value> {
     let service = state.read().expect("service lock poisoned");
     let (running, pid) = service.is_server_running();
     let (used_ram, total_ram) = service.get_ram_usage();
     let (used_vram, total_vram) = service.get_gpu_vram();
     let process_ram = if running { service.get_process_ram(pid) } else { 0 };
+    let perf = service.refresh_and_get_perf_stats();
 
     Json(serde_json::json!({
         "running": running,
@@ -173,7 +176,34 @@ async fn get_monitoring(State(state): State<SharedState>) -> Json<Value> {
         },
         "process_ram": process_ram,
         "process_ram_human": service.format_bytes(process_ram),
+        "performance": {
+            "prompt_tps": perf.prompt_tps,
+            "gen_tps": perf.gen_tps,
+            "model_loaded": perf.model_loaded,
+            "model_loaded_at": perf.model_loaded_at,
+            "model_uptime_secs": perf.model_uptime_secs,
+            "last_prompt": perf.last_prompt,
+        },
     }))
+}
+
+async fn get_perf(State(state): State<SharedState>) -> Json<Value> {
+    let service = state.read().expect("service lock poisoned");
+    let perf = service.refresh_and_get_perf_stats();
+    Json(serde_json::json!({
+        "prompt_tps": perf.prompt_tps,
+        "gen_tps": perf.gen_tps,
+        "model_loaded": perf.model_loaded,
+        "model_loaded_at": perf.model_loaded_at,
+        "model_uptime_secs": perf.model_uptime_secs,
+        "last_prompt": perf.last_prompt,
+    }))
+}
+
+async fn post_perf_reset(State(state): State<SharedState>) -> Json<Value> {
+    let service = state.read().expect("service lock poisoned");
+    service.reset_perf_stats();
+    Json(serde_json::json!({ "reset": true }))
 }
 
 async fn get_options(State(state): State<SharedState>) -> Result<Json<Value>, ApiError> {
@@ -257,7 +287,7 @@ async fn post_launch(
     request: Request,
 ) -> Result<Json<Value>, ApiError> {
     let body = parse_json_object(request, false).await?;
-    let service = state.read().expect("service lock poisoned");
+    let service = state.write().expect("service lock poisoned");
     let (resolved_exe, cmd) = prepare_launch_data(body, &service)?;
     let pid = service.launch(cmd.clone(), &resolved_exe);
     Ok(Json(serde_json::json!({ "pid": pid, "command": cmd })))
@@ -274,7 +304,7 @@ async fn post_restart(
     request: Request,
 ) -> Result<Json<Value>, ApiError> {
     let body = parse_json_object(request, false).await?;
-    let service = state.read().expect("service lock poisoned");
+    let service = state.write().expect("service lock poisoned");
     let (resolved_exe, cmd) = prepare_launch_data(body, &service)?;
     let pid = service.restart(cmd.clone(), &resolved_exe);
     Ok(Json(serde_json::json!({ "pid": pid, "command": cmd })))
@@ -694,6 +724,13 @@ mod tests {
         assert!(monitoring_body.get("ram").is_some());
         assert!(monitoring_body.get("vram").is_some());
         assert!(monitoring_body.get("process_ram_human").is_some());
+        // Performance section present in monitoring.
+        assert!(monitoring_body.get("performance").is_some());
+        let perf_section = monitoring_body.get("performance").expect("performance section");
+        assert!(perf_section.get("prompt_tps").is_some());
+        assert!(perf_section.get("gen_tps").is_some());
+        assert!(perf_section.get("model_loaded").is_some());
+        assert!(perf_section.get("last_prompt").is_some());
 
         let launch_invalid = client
             .post(format!("{}/api/launch", base))
@@ -716,6 +753,42 @@ mod tests {
             .await
             .expect("restart missing body");
         assert_eq!(restart_missing.status(), StatusCode::BAD_REQUEST);
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn perf_endpoint_and_reset() {
+        let (base, _state, handle) = spawn_server().await;
+        let client = Client::new();
+
+        // GET /api/perf returns OK with expected fields.
+        let perf = client
+            .get(format!("{}/api/perf", base))
+            .send()
+            .await
+            .expect("get perf");
+        assert_eq!(perf.status(), StatusCode::OK);
+        let perf_body: Value = perf.json().await.expect("parse perf body");
+        assert!(perf_body.get("prompt_tps").is_some());
+        assert!(perf_body.get("gen_tps").is_some());
+        assert!(perf_body.get("model_loaded").is_some());
+        assert!(perf_body.get("model_loaded_at").is_some());
+        assert!(perf_body.get("model_uptime_secs").is_some());
+        assert!(perf_body.get("last_prompt").is_some());
+        // Initially empty.
+        assert_eq!(perf_body.get("model_loaded").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(perf_body.get("last_prompt").and_then(|v| v.as_str()), Some(""));
+
+        // POST /api/perf/reset returns OK.
+        let reset = client
+            .post(format!("{}/api/perf/reset", base))
+            .send()
+            .await
+            .expect("reset perf");
+        assert_eq!(reset.status(), StatusCode::OK);
+        let reset_body: Value = reset.json().await.expect("parse reset body");
+        assert_eq!(reset_body.get("reset").and_then(|v| v.as_bool()), Some(true));
 
         handle.abort();
     }

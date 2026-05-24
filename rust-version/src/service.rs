@@ -11,7 +11,7 @@ use crate::command::{self, canonical_adv_key, favorite_string_value};
 use crate::config::{self, app_dir};
 use crate::discovery::scan_gguf_models;
 use crate::models::{GlobalSettings, LlamaOption, Profile};
-use crate::monitoring::{self, bytes_to_gb, tail_log_chunk};
+use crate::monitoring::{self, bytes_to_gb, tail_log_chunk, feed_perf_stats, refresh_perf_uptime, PerfStats};
 use crate::options::{load_options_from_exe, resolve_llama_server_path};
 use crate::process::{self, read_pid, write_pid};
 
@@ -82,6 +82,8 @@ struct State {
     last_log_size: usize,
     /// Tail of the previously-seen log prefix (rewrite detection marker).
     last_log_marker: String,
+    /// Runtime performance statistics (prompt/gen speed, model status).
+    perf_stats: PerfStats,
 }
 
 impl Default for State {
@@ -89,6 +91,7 @@ impl Default for State {
         Self {
             last_log_size: 0,
             last_log_marker: String::new(),
+            perf_stats: PerfStats::default(),
         }
     }
 }
@@ -628,7 +631,11 @@ impl LlamaLauncherService {
 
     /// Launch the server with the given command.
     pub fn launch(&self, cmd: Vec<String>, exe_path: &str) -> i32 {
-        let _guard = self.state.write().expect("lock poisoned");
+        // Reset performance stats before launching (avoids reentrant lock).
+        {
+            let mut state = self.state.write().expect("lock poisoned");
+            state.perf_stats = PerfStats::default();
+        }
         self.launch_internal(&cmd, exe_path)
     }
 
@@ -640,7 +647,11 @@ impl LlamaLauncherService {
 
     /// Atomically stop and relaunch the server.
     pub fn restart(&self, cmd: Vec<String>, exe_path: &str) -> i32 {
-        let _guard = self.state.write().expect("lock poisoned");
+        // Reset performance stats before restarting (avoids reentrant lock).
+        {
+            let mut state = self.state.write().expect("lock poisoned");
+            state.perf_stats = PerfStats::default();
+        }
         self.stop_internal();
         self.launch_internal(&cmd, exe_path)
     }
@@ -674,7 +685,13 @@ impl LlamaLauncherService {
         if !self.log_out.exists() {
             return (String::new(), last_size, false, last_marker.to_string());
         }
-        tail_log_chunk(&self.log_out, last_size, last_marker)
+        let (chunk, new_size, reset, new_marker) = tail_log_chunk(&self.log_out, last_size, last_marker);
+        // NOTE: perf_stats are NOT updated here.  This method uses the
+        // *client's* cursor (last_size/last_marker).  Feeding stats from
+        // a client cursor would undo /api/perf/reset when a slow client
+        // re-scans historical log content.  Perf stats are driven solely
+        // by the internal cursor in refresh_and_get_perf_stats().
+        (chunk, new_size, reset, new_marker)
     }
 
     // -- monitoring text ----------------------------------------------------
@@ -682,6 +699,66 @@ impl LlamaLauncherService {
     /// Build a two-line ``RAM … / VRAM …`` string suitable for display.
     pub fn build_monitoring_text(&self) -> String {
         monitoring::build_monitoring_text()
+    }
+
+    // -- performance stats --------------------------------------------------
+
+    /// Return a snapshot of the current performance statistics.
+    pub fn get_perf_stats(&self) -> PerfStats {
+        let state = self.state.read().expect("lock poisoned");
+        state.perf_stats.clone()
+    }
+
+    /// Reset performance statistics to their default (empty) values.
+    ///
+    /// Preserves the internal cursor (`last_log_size` / `last_log_marker`)
+    /// so the next ``refresh_and_get_perf_stats()`` only sees *new* log
+    /// content — avoids re-injecting historical markers after a reset.
+    pub fn reset_perf_stats(&self) {
+        let mut state = self.state.write().expect("lock poisoned");
+        let cursor_size = state.perf_stats.last_log_size;
+        let cursor_marker = state.perf_stats.last_log_marker.clone();
+        monitoring::reset_perf_stats(&mut state.perf_stats);
+        state.perf_stats.last_log_size = cursor_size;
+        state.perf_stats.last_log_marker = cursor_marker;
+    }
+
+    /// Tail the log for new content, feed perf stats, refresh uptime,
+    /// and return a snapshot.  Suitable for read-only endpoints that
+    /// should always return fresh data.
+    ///
+    /// Uses ``last_log_size`` / ``last_log_marker`` stored inside
+    /// ``PerfStats`` to tail **only new content** — avoids re-parsing
+    /// historical markers (e.g. model-load) that would undo a reset.
+    pub fn refresh_and_get_perf_stats(&self) -> PerfStats {
+        if self.log_out.exists() {
+            let (log_pos, log_marker) = {
+                let state = self.state.read().expect("lock poisoned");
+                (state.perf_stats.last_log_size, state.perf_stats.last_log_marker.clone())
+            };
+            let (chunk, new_size, reset, new_marker) =
+                tail_log_chunk(&self.log_out, log_pos, &log_marker);
+            let mut state = self.state.write().expect("lock poisoned");
+            if reset {
+                // Log was truncated or rewritten — feed the recovery chunk
+                // (full current file) into perf stats, then advance cursor.
+                feed_perf_stats(&mut state.perf_stats, &chunk);
+                state.perf_stats.last_log_size = new_size;
+                state.perf_stats.last_log_marker = new_marker;
+            } else if !chunk.is_empty() {
+                feed_perf_stats(&mut state.perf_stats, &chunk);
+                state.perf_stats.last_log_size = new_size;
+                state.perf_stats.last_log_marker = new_marker;
+            }
+            refresh_perf_uptime(&mut state.perf_stats);
+            let snapshot = state.perf_stats.clone();
+            drop(state);
+            return snapshot;
+        }
+        // No log file — just refresh uptime from stored timestamp.
+        let mut state = self.state.write().expect("lock poisoned");
+        refresh_perf_uptime(&mut state.perf_stats);
+        state.perf_stats.clone()
     }
 
     // -- read-only path properties ------------------------------------------
@@ -1255,5 +1332,121 @@ mod tests {
         // Defaults preserved.
         assert_eq!(dup.host, "127.0.0.1");
         assert_eq!(dup.port, 8080);
+    }
+
+    // ---- Acceptance: perf stats initial state ----
+
+    #[test]
+    fn test_perf_stats_initial_empty() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+
+        let perf = svc.get_perf_stats();
+        assert!(perf.prompt_tps.is_none());
+        assert!(perf.gen_tps.is_none());
+        assert!(!perf.model_loaded);
+        assert_eq!(perf.model_loaded_at, 0);
+        assert!(perf.last_prompt.is_empty());
+    }
+
+    // ---- Acceptance: perf stats reset ----
+
+    #[test]
+    fn test_perf_stats_reset() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+
+        // Write log content that triggers perf stats updates.
+        std::fs::write(
+            svc.log_out_path(),
+            "llama_model_loader: loaded model\n\
+             User prompt: Hello\n\
+             prompt eval time = 100.00 ms / 5 tokens (20.00 ms per token, 50.00 tokens per second)\n",
+        )
+        .expect("write log");
+
+        // refresh_and_get_perf_stats feeds the stats from the internal cursor.
+        let perf = svc.refresh_and_get_perf_stats();
+        assert!(perf.model_loaded);
+        assert_eq!(perf.last_prompt, "Hello");
+        assert_eq!(perf.prompt_tps, Some(50.00));
+
+        // Reset clears everything.
+        svc.reset_perf_stats();
+        let perf = svc.get_perf_stats();
+        assert!(perf.prompt_tps.is_none());
+        assert!(!perf.model_loaded);
+        assert!(perf.last_prompt.is_empty());
+    }
+
+    // ---- Fix: refresh_and_get_perf_stats tails log and refreshes uptime ----
+
+    #[test]
+    fn test_refresh_and_get_perf_stats_tails_log_and_uptime() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+
+        // Write log content with model load marker.
+        std::fs::write(
+            svc.log_out_path(),
+            "llama_model_loader: loaded model\n\
+             User prompt: Hello\n\
+             prompt eval time = 100.00 ms / 5 tokens (20.00 ms per token, 50.00 tokens per second)\n",
+        )
+        .expect("write log");
+
+        // refresh_and_get_perf_stats should pick up the log content.
+        let perf = svc.refresh_and_get_perf_stats();
+        assert!(perf.model_loaded);
+        assert_eq!(perf.last_prompt, "Hello");
+        assert_eq!(perf.prompt_tps, Some(50.00));
+        let uptime1 = perf.model_uptime_secs;
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+
+        // Second call should refresh uptime even without new log content.
+        let perf2 = svc.refresh_and_get_perf_stats();
+        let uptime2 = perf2.model_uptime_secs;
+        assert!(
+            uptime2 >= uptime1,
+            "uptime should not decrease after refresh ({} vs {})",
+            uptime2,
+            uptime1
+        );
+    }
+
+    // ---- Acceptance: perf stats reset on launch ----
+
+    #[test]
+    #[cfg(windows)]
+    fn test_perf_stats_reset_on_launch() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+
+        // Seed some stats via log.
+        std::fs::write(
+            svc.log_out_path(),
+            "llama_model_loader: loaded model\n",
+        )
+        .expect("write log");
+        let perf = svc.refresh_and_get_perf_stats();
+        assert!(perf.model_loaded);
+
+        // Launch a dummy process — should reset stats.
+        let cmd = vec![
+            "ping".into(),
+            "-n".into(),
+            "2".into(),
+            "127.0.0.1".into(),
+        ];
+        let pid = svc.launch(cmd, "");
+        assert!(pid > 0);
+
+        let perf = svc.get_perf_stats();
+        assert!(!perf.model_loaded, "stats should be reset after launch");
+        assert!(perf.prompt_tps.is_none());
+
+        // Clean up.
+        svc.stop();
     }
 }
