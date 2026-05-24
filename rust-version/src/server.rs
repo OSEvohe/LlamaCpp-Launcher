@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::{Arc, RwLock};
 
 use axum::body::{to_bytes, Body};
@@ -84,6 +85,19 @@ pub fn app(state: SharedState) -> Router {
 
 pub async fn serve(listener: TcpListener, state: SharedState) -> std::io::Result<()> {
     axum::serve(listener, app(state)).await
+}
+
+pub async fn serve_with_shutdown<F>(
+    listener: TcpListener,
+    state: SharedState,
+    shutdown: F,
+) -> std::io::Result<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    axum::serve(listener, app(state))
+        .with_graceful_shutdown(shutdown)
+        .await
 }
 
 async fn not_found() -> ApiError {

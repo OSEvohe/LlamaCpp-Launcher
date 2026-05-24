@@ -10,6 +10,7 @@ tokio = { version = "1", features = ["full"] }
 axum = "0.7"
 tower-http = { version = "0.5", features = ["fs"] }
 winapi = { version = "0.3", features = ["winbase", "processthreadsapi", "winnt", "errhandlingapi", "sysinfoapi", "handleapi", "minwinbase", "fileapi"] }
+windows-service = "0.7"
 clap = { version = "4", features = ["derive"] }
 regex = "1"
 
