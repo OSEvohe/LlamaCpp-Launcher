@@ -201,12 +201,10 @@ fn run_windows_service(arguments: Vec<OsString>) -> Result<(), String> {
         .map_err(|err| format!("failed to report service start pending status: {}", err))?;
 
     let mut cli_args = vec![OsString::from("llama-launcher-service")];
+    // The SCM passes the service name as first argument (e.g. "LlamaLauncher").
+    // Skip it, then forward only actual CLI options.
     let mut service_args = arguments.into_iter();
-    if let Some(first) = service_args.next() {
-        if first.to_string_lossy().starts_with('-') {
-            cli_args.push(first);
-        }
-    }
+    let _ = service_args.next();
     cli_args.extend(service_args);
     let cli = Cli::try_parse_from(cli_args).map_err(|err| err.to_string())?;
     let (host, port) = resolve_api_settings(cli.api_host.as_deref(), cli.api_port);
