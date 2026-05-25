@@ -13,7 +13,7 @@ a{color:#58a6ff;text-decoration:none}
 a:hover{text-decoration:underline}
 
 /* ---- layout ---- */
-.app{max-width:1100px;margin:0 auto;padding:16px;padding-bottom:52px}
+.app{max-width:1100px;margin:0 auto;padding:16px}
 .header{display:flex;align-items:center;justify-content:space-between;padding:8px 0 16px;
   border-bottom:1px solid #30363d;margin-bottom:16px}
 .header h1{font-size:20px;font-weight:600;color:#f0f6fc}
@@ -90,17 +90,6 @@ tr:hover td{background:#161b22}
 .profile-list li .active-badge{display:inline-block;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:700;
   background:#238636;color:#fff;margin-left:6px;letter-spacing:.3px}
 
-/* ---- fixed monitoring footer ---- */
-.mon-footer{position:fixed;bottom:0;left:0;right:0;z-index:100;
-  background:#0d1117;border-top:1px solid #30363d;
-  display:flex;align-items:center;gap:16px;padding:6px 16px;
-  font-size:13px;color:#c9d1d9;white-space:nowrap;overflow-x:auto}
-.mon-footer .mon-item{display:flex;align-items:baseline;gap:4px}
-.mon-footer .mon-label{font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.3px}
-.mon-footer .mon-val{font-size:13px;font-weight:600;color:#f0f6fc}
-.mon-footer .mon-val.green{color:#3fb950}
-.mon-footer .mon-val.red{color:#f85149}
-
 /* ---- misc ---- */
 .mt-8{margin-top:8px}
 .mt-12{margin-top:12px}
@@ -165,6 +154,7 @@ input.switch:checked::after{transform:translateX(18px);background:#fff}
     <button class="tab-btn" data-tab="logs">Logs</button>
     <button class="tab-btn" data-tab="models">Models</button>
     <button class="tab-btn" data-tab="advanced">Advanced</button>
+    <button class="tab-btn" data-tab="monitoring">Monitoring</button>
   </div>
 
   <!-- ==================== PROFILES ==================== -->
@@ -312,16 +302,41 @@ input.switch:checked::after{transform:translateX(18px);background:#fff}
     </div>
   </div>
 
-</div><!-- /app -->
+  <!-- ==================== MONITORING ==================== -->
+  <div class="tab-panel" id="panel-monitoring">
+    <div class="card">
+      <h2>System Resources</h2>
+      <div class="grid grid-3">
+        <div class="stat"><div class="label">Status</div><div class="value" id="footStatus">&mdash;</div></div>
+        <div class="stat"><div class="label">PID</div><div class="value" id="footPid">&mdash;</div></div>
+        <div class="stat"><div class="label">Process RAM</div><div class="value" id="footProcessRam">&mdash;</div></div>
+      </div>
+      <h3 class="mt-12">RAM</h3>
+      <div class="grid grid-2">
+        <div class="stat"><div class="label">Used</div><div class="value" id="footRamUsed">&mdash;</div></div>
+        <div class="stat"><div class="label">Total</div><div class="value" id="footRamTotal">&mdash;</div></div>
+      </div>
+      <h3 class="mt-12">VRAM</h3>
+      <div class="grid grid-2">
+        <div class="stat"><div class="label">Used</div><div class="value" id="footVramUsed">&mdash;</div></div>
+        <div class="stat"><div class="label">Total</div><div class="value" id="footVramTotal">&mdash;</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Performance</h2>
+      <div class="grid grid-4">
+        <div class="stat"><div class="label">Prompt t/s</div><div class="value" id="footPromptTps">&mdash;</div></div>
+        <div class="stat"><div class="label">Gen t/s</div><div class="value" id="footGenTps">&mdash;</div></div>
+        <div class="stat"><div class="label">Model Uptime</div><div class="value" id="footModelUptime">&mdash;</div></div>
+        <div class="stat"><div class="label">Last Prompt</div><div class="value" id="footLastPrompt">&mdash;</div></div>
+      </div>
+      <div class="btn-group mt-12">
+        <button class="btn small" id="btnResetPerf">Reset perf</button>
+      </div>
+    </div>
+  </div>
 
-<!-- Fixed monitoring footer -->
-<div class="mon-footer" id="monFooter">
-  <div class="mon-item"><span class="mon-label">Status</span><span class="mon-val" id="footStatus">&mdash;</span></div>
-  <div class="mon-item"><span class="mon-label">PID</span><span class="mon-val" id="footPid">&mdash;</span></div>
-  <div class="mon-item"><span class="mon-label">RAM</span><span class="mon-val" id="footRamUsed">&mdash;</span><span class="mon-label">/</span><span class="mon-val" id="footRamTotal">&mdash;</span></div>
-  <div class="mon-item"><span class="mon-label">VRAM</span><span class="mon-val" id="footVramUsed">&mdash;</span><span class="mon-label">/</span><span class="mon-val" id="footVramTotal">&mdash;</span></div>
-  <div class="mon-item"><span class="mon-label">Proc RAM</span><span class="mon-val" id="footProcessRam">&mdash;</span></div>
-</div>
+</div><!-- /app -->
 
 <script>
 /* ================================================================
@@ -365,6 +380,7 @@ $$('.tab-btn').forEach(btn => {
     if (tab === 'logs' && !logPollingActive) { startLogPolling(); }
     if (tab === 'models') fetchModels();
     if (tab === 'advanced') initAdvancedTab();
+    if (tab === 'monitoring') fetchMonitoring();
   });
 });
 
@@ -386,7 +402,7 @@ async function updateStatusBadge() {
   }
 }
 
-// ---- monitoring (updates fixed footer) ----
+// ---- monitoring (updates monitoring panel) ----
 async function fetchMonitoring() {
   try {
     const d = await api('/api/monitoring');
@@ -396,15 +412,51 @@ async function fetchMonitoring() {
     $('#footVramTotal').textContent = d.vram.total_human || '0 B';
     $('#footProcessRam').textContent = d.process_ram_human || '0 B';
     $('#footPid').textContent = d.pid != null ? d.pid : '—';
+    const perf = d.performance || {};
+    const pt = Number(perf.prompt_tps);
+    $('#footPromptTps').textContent = isFinite(pt) ? pt.toFixed(2) : '—';
+    const gt = Number(perf.gen_tps);
+    $('#footGenTps').textContent = isFinite(gt) ? gt.toFixed(2) : '—';
+    $('#footModelUptime').textContent = formatDuration(perf.model_uptime_secs || 0);
+    $('#footLastPrompt').textContent = perf.last_prompt || '—';
     const sEl = $('#footStatus');
     sEl.textContent = d.running ? 'Running' : 'Stopped';
-    sEl.className = 'mon-val ' + (d.running ? 'green' : 'red');
+    sEl.style.color = d.running ? '#3fb950' : '#f85149';
   } catch (e) {
-    const sEl = $('#footStatus');
-    sEl.textContent = 'err';
-    sEl.className = 'mon-val red';
+    const dash = '—';
+    $('#footStatus').textContent = 'err';
+    $('#footStatus').style.color = '#f85149';
+    $('#footPid').textContent = dash;
+    $('#footRamUsed').textContent = dash;
+    $('#footRamTotal').textContent = dash;
+    $('#footVramUsed').textContent = dash;
+    $('#footVramTotal').textContent = dash;
+    $('#footProcessRam').textContent = dash;
+    $('#footPromptTps').textContent = dash;
+    $('#footGenTps').textContent = dash;
+    $('#footModelUptime').textContent = dash;
+    $('#footLastPrompt').textContent = dash;
   }
 }
+
+function formatDuration(totalSecs) {
+  const s = Math.max(0, Number(totalSecs) || 0);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m ${sec}s`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
+async function doResetPerf() {
+  try {
+    await api('/api/perf/reset', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+    fetchMonitoring();
+  } catch (_e) {}
+}
+
+$('#btnResetPerf').addEventListener('click', doResetPerf);
 
 // ---- controls (header buttons) ----
 function headerResult(msg, isError) {
