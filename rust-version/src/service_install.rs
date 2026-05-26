@@ -49,6 +49,15 @@ fn install_service_args(exe_path: &Path) -> Vec<String> {
     ]
 }
 
+fn config_service_delayed_auto_args() -> Vec<String> {
+    vec![
+        "config".to_string(),
+        SERVICE_NAME.to_string(),
+        "start=".to_string(),
+        "delayed-auto".to_string(),
+    ]
+}
+
 fn start_service_args() -> Vec<String> {
     vec!["start".to_string(), SERVICE_NAME.to_string()]
 }
@@ -155,11 +164,20 @@ pub fn install_service() -> Result<(), String> {
         std::env::current_exe().map_err(|err| format!("failed to resolve current executable: {}", err))?;
     let args = install_service_args(&exe);
     let output = run_sc(&args, "create")?;
-    if output.status.success() {
+    if !output.status.success() {
+        return Err(render_sc_error(&output, "install"));
+    }
+
+    let delayed_auto_args = config_service_delayed_auto_args();
+    let delayed_auto_output = run_sc(&delayed_auto_args, "config delayed-auto start")?;
+    if delayed_auto_output.status.success() {
         return Ok(());
     }
 
-    Err(render_sc_error(&output, "install"))
+    Err(render_sc_error(
+        &delayed_auto_output,
+        "configure delayed-auto start for",
+    ))
 }
 
 pub fn uninstall_service() -> Result<(), String> {
@@ -250,6 +268,20 @@ mod tests {
     fn test_start_service_args() {
         let args = start_service_args();
         assert_eq!(args, vec!["start".to_string(), SERVICE_NAME.to_string()]);
+    }
+
+    #[test]
+    fn test_config_service_delayed_auto_args() {
+        let args = config_service_delayed_auto_args();
+        assert_eq!(
+            args,
+            vec![
+                "config".to_string(),
+                SERVICE_NAME.to_string(),
+                "start=".to_string(),
+                "delayed-auto".to_string(),
+            ]
+        );
     }
 
     #[test]
