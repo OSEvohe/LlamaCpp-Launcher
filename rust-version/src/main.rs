@@ -212,9 +212,22 @@ fn run_windows_service(arguments: Vec<OsString>) -> Result<(), String> {
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|err| format!("failed to create Tokio runtime for Windows service: {}", err))?;
     let bind_addr = format!("{}:{}", host, port);
-    let listener = runtime
-        .block_on(async { TcpListener::bind(&bind_addr).await })
-        .map_err(|err| format!("failed to bind API server on {} - {}", bind_addr, err))?;
+    let listener = runtime.block_on(async {
+        let mut last_err = None;
+        for attempt in 1..=30 {
+            match TcpListener::bind(&bind_addr).await {
+                Ok(listener) => return Ok(listener),
+                Err(err) => {
+                    last_err = Some(err);
+                    if attempt < 30 {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        }
+        Err(last_err.expect("bind retry loop should capture last error"))
+    })
+    .map_err(|err| format!("failed to bind API server on {} after retry - {}", bind_addr, err))?;
 
     let local_addr = listener
         .local_addr()
