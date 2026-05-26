@@ -154,37 +154,13 @@ async fn get_logs(
  async fn get_monitoring(State(state): State<SharedState>) -> Json<Value> {
     let service = state.read().expect("service lock poisoned");
     let (running, pid) = service.is_server_running();
-    let (used_ram, total_ram) = service.get_ram_usage();
-    let (used_vram, total_vram) = service.get_gpu_vram();
-    let process_ram = if running { service.get_process_ram(pid) } else { 0 };
-    let perf = service.refresh_and_get_perf_stats();
+    // TDA: the service assembles the full monitoring payload in one call.
+    let monitoring_payload = service.build_monitoring_payload(running, pid);
 
-    Json(serde_json::json!({
-        "running": running,
-        "pid": if running { Value::from(pid) } else { Value::Null },
-        "ram": {
-            "used": used_ram,
-            "total": total_ram,
-            "used_human": service.format_bytes(used_ram),
-            "total_human": service.format_bytes(total_ram),
-        },
-        "vram": {
-            "used": used_vram,
-            "total": total_vram,
-            "used_human": service.format_bytes(used_vram),
-            "total_human": service.format_bytes(total_vram),
-        },
-        "process_ram": process_ram,
-        "process_ram_human": service.format_bytes(process_ram),
-        "performance": {
-            "prompt_tps": perf.prompt_tps,
-            "gen_tps": perf.gen_tps,
-            "model_loaded": perf.model_loaded,
-            "model_loaded_at": perf.model_loaded_at,
-            "model_uptime_secs": perf.model_uptime_secs,
-            "last_prompt": perf.last_prompt,
-        },
-    }))
+    let mut response = monitoring_payload.as_object().unwrap().clone();
+    response.insert("running".into(), Value::Bool(running));
+    response.insert("pid".into(), if running { Value::from(pid) } else { Value::Null });
+    Json(Value::Object(response))
 }
 
 async fn get_perf(State(state): State<SharedState>) -> Json<Value> {
@@ -451,6 +427,7 @@ async fn parse_json_object(
 mod tests {
     use super::*;
     use reqwest::Client;
+    use reqwest::StatusCode;
     use tempfile::tempdir;
 
     async fn spawn_server() -> (String, SharedState, tokio::task::JoinHandle<()>) {
@@ -699,10 +676,8 @@ mod tests {
             .to_string();
 
         let logs_next = client
-            .get(format!(
-                "{}/api/logs?last_size={}&last_marker={}",
-                base, next_size, marker
-            ))
+            .get(format!("{}/api/logs", base))
+            .query(&[("last_size", &next_size.to_string()), ("last_marker", &marker)])
             .send()
             .await
             .expect("get logs next");

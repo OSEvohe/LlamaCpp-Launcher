@@ -11,7 +11,7 @@ use crate::command::{self, canonical_adv_key, favorite_string_value};
 use crate::config::{self, app_dir};
 use crate::discovery::scan_gguf_models;
 use crate::models::{GlobalSettings, LlamaOption, Profile};
-use crate::monitoring::{self, bytes_to_gb, tail_log_chunk, feed_perf_stats, refresh_perf_uptime, PerfStats};
+use crate::monitoring::{self, MonitoringService, PerfStats};
 use crate::options::{load_options_from_exe, resolve_llama_server_path};
 use crate::process::{self, read_pid, write_pid};
 
@@ -77,22 +77,11 @@ fn coerce_bool(val: &serde_json::Value, field: &str) -> Result<bool, String> {
 // ---------------------------------------------------------------------------
 
 /// Mutable runtime state protected by a single ``RwLock``.
-struct State {
-    /// Last known log file size (character count after lossy decode).
-    last_log_size: usize,
-    /// Tail of the previously-seen log prefix (rewrite detection marker).
-    last_log_marker: String,
-    /// Runtime performance statistics (prompt/gen speed, model status).
-    perf_stats: PerfStats,
-}
+struct State {}
 
 impl Default for State {
     fn default() -> Self {
-        Self {
-            last_log_size: 0,
-            last_log_marker: String::new(),
-            perf_stats: PerfStats::default(),
-        }
+        Self {}
     }
 }
 
@@ -123,6 +112,8 @@ pub struct LlamaLauncherService {
     is_default_app_dir: bool,
     /// Runtime state protected by ``RwLock``.
     state: RwLock<State>,
+    /// Monitoring service (owns log cursor and perf stats).
+    monitoring: RwLock<MonitoringService>,
 }
 
 impl LlamaLauncherService {
@@ -147,6 +138,9 @@ impl LlamaLauncherService {
             log_err: given.join(".launcher").join("llama-server.err.log"),
             is_default_app_dir: is_default,
             state: RwLock::new(State::default()),
+            monitoring: RwLock::new(MonitoringService::new(
+                given.join(".launcher").join("llama-server.log"),
+            )),
         }
     }
 
@@ -174,7 +168,12 @@ impl LlamaLauncherService {
                         Some(arr) => {
                             let mut profiles = Vec::new();
                             for item in arr {
-                                if let Ok(p) = serde_json::from_value(item.clone()) {
+                                let mut obj = match item.as_object().cloned() {
+                                    Some(o) => o,
+                                    None => continue,
+                                };
+                                config::normalize_mtp(&mut obj);
+                                if let Ok(p) = serde_json::from_value(serde_json::Value::Object(obj)) {
                                     profiles.push(p);
                                 }
                             }
@@ -631,10 +630,10 @@ impl LlamaLauncherService {
 
     /// Launch the server with the given command.
     pub fn launch(&self, cmd: Vec<String>, exe_path: &str) -> i32 {
-        // Reset performance stats before launching (avoids reentrant lock).
+        // Full reset of monitoring (stats + cursor) before launching (avoids reentrant lock).
         {
-            let mut state = self.state.write().expect("lock poisoned");
-            state.perf_stats = PerfStats::default();
+            let mut mon = self.monitoring.write().expect("lock poisoned");
+            mon.full_reset();
         }
         self.launch_internal(&cmd, exe_path)
     }
@@ -647,10 +646,10 @@ impl LlamaLauncherService {
 
     /// Atomically stop and relaunch the server.
     pub fn restart(&self, cmd: Vec<String>, exe_path: &str) -> i32 {
-        // Reset performance stats before restarting (avoids reentrant lock).
+        // Full reset of monitoring (stats + cursor) before restarting (avoids reentrant lock).
         {
-            let mut state = self.state.write().expect("lock poisoned");
-            state.perf_stats = PerfStats::default();
+            let mut mon = self.monitoring.write().expect("lock poisoned");
+            mon.full_reset();
         }
         self.stop_internal();
         self.launch_internal(&cmd, exe_path)
@@ -660,38 +659,39 @@ impl LlamaLauncherService {
 
     /// Return ``(used_bytes, total_bytes)`` of physical RAM.
     pub fn get_ram_usage(&self) -> (u64, u64) {
-        monitoring::ram_usage_bytes()
+        let mon = self.monitoring.read().expect("lock poisoned");
+        mon.ram_usage_bytes()
     }
 
     /// Return approximate RAM usage (bytes) of the process with *pid*.
     pub fn get_process_ram(&self, pid: i32) -> u64 {
-        monitoring::process_ram_bytes(pid)
+        let mon = self.monitoring.read().expect("lock poisoned");
+        mon.process_ram_bytes(pid)
     }
 
     /// Return ``(used_bytes, total_bytes)`` of GPU VRAM.
     pub fn get_gpu_vram(&self) -> (u64, u64) {
-        monitoring::gpu_vram_info()
+        let mon = self.monitoring.read().expect("lock poisoned");
+        mon.gpu_vram_info()
     }
 
     /// Format *value* (bytes) as a human-readable GB string.
     pub fn format_bytes(&self, value: u64) -> String {
-        bytes_to_gb(value)
+        let mon = self.monitoring.read().expect("lock poisoned");
+        mon.format_bytes(value)
     }
 
     // -- log tailing --------------------------------------------------------
 
     /// Read new content appended to the log file since *last_size*.
     pub fn tail_log(&self, last_size: usize, last_marker: &str) -> (String, usize, bool, String) {
-        if !self.log_out.exists() {
-            return (String::new(), last_size, false, last_marker.to_string());
-        }
-        let (chunk, new_size, reset, new_marker) = tail_log_chunk(&self.log_out, last_size, last_marker);
         // NOTE: perf_stats are NOT updated here.  This method uses the
         // *client's* cursor (last_size/last_marker).  Feeding stats from
         // a client cursor would undo /api/perf/reset when a slow client
         // re-scans historical log content.  Perf stats are driven solely
         // by the internal cursor in refresh_and_get_perf_stats().
-        (chunk, new_size, reset, new_marker)
+        let mon = self.monitoring.read().expect("lock poisoned");
+        mon.tail_log_for_client(&self.log_out, last_size, last_marker)
     }
 
     // -- monitoring text ----------------------------------------------------
@@ -701,64 +701,77 @@ impl LlamaLauncherService {
         monitoring::build_monitoring_text()
     }
 
+    /// Assemble the full monitoring JSON payload (TDA).
+    ///
+    /// *running* and *pid* are supplied by the caller (not a monitoring concern).
+    pub fn build_monitoring_payload(&self, running: bool, pid: i32) -> serde_json::Value {
+        let mut mon = self.monitoring.write().expect("lock poisoned");
+        mon.refresh();
+
+        let (used_ram, total_ram) = mon.ram_usage_bytes();
+        let (used_vram, total_vram) = mon.gpu_vram_info();
+        let process_ram = if running {
+            mon.process_ram_bytes(pid)
+        } else {
+            0
+        };
+        let perf = mon.stats_clone();
+
+        serde_json::json!({
+            "ram": {
+                "used": used_ram,
+                "total": total_ram,
+                "used_human": mon.format_bytes(used_ram),
+                "total_human": mon.format_bytes(total_ram),
+            },
+            "vram": {
+                "used": used_vram,
+                "total": total_vram,
+                "used_human": mon.format_bytes(used_vram),
+                "total_human": mon.format_bytes(total_vram),
+            },
+            "process_ram": process_ram,
+            "process_ram_human": mon.format_bytes(process_ram),
+            "performance": {
+                "prompt_tps": perf.prompt_tps,
+                "gen_tps": perf.gen_tps,
+                "model_loaded": perf.model_loaded,
+                "model_loaded_at": perf.model_loaded_at,
+                "model_uptime_secs": perf.model_uptime_secs,
+                "last_prompt": perf.last_prompt,
+            },
+        })
+    }
+
     // -- performance stats --------------------------------------------------
 
     /// Return a snapshot of the current performance statistics.
     pub fn get_perf_stats(&self) -> PerfStats {
-        let state = self.state.read().expect("lock poisoned");
-        state.perf_stats.clone()
+        let mon = self.monitoring.read().expect("lock poisoned");
+        mon.stats_clone()
     }
 
     /// Reset performance statistics to their default (empty) values.
     ///
-    /// Preserves the internal cursor (`last_log_size` / `last_log_marker`)
-    /// so the next ``refresh_and_get_perf_stats()`` only sees *new* log
-    /// content — avoids re-injecting historical markers after a reset.
+    /// Preserves the internal cursor so the next ``refresh_and_get_perf_stats()``
+    /// only sees *new* log content — avoids re-injecting historical markers
+    /// after a reset.
     pub fn reset_perf_stats(&self) {
-        let mut state = self.state.write().expect("lock poisoned");
-        let cursor_size = state.perf_stats.last_log_size;
-        let cursor_marker = state.perf_stats.last_log_marker.clone();
-        monitoring::reset_perf_stats(&mut state.perf_stats);
-        state.perf_stats.last_log_size = cursor_size;
-        state.perf_stats.last_log_marker = cursor_marker;
+        let mut mon = self.monitoring.write().expect("lock poisoned");
+        mon.reset_perf();
     }
 
     /// Tail the log for new content, feed perf stats, refresh uptime,
     /// and return a snapshot.  Suitable for read-only endpoints that
     /// should always return fresh data.
     ///
-    /// Uses ``last_log_size`` / ``last_log_marker`` stored inside
-    /// ``PerfStats`` to tail **only new content** — avoids re-parsing
-    /// historical markers (e.g. model-load) that would undo a reset.
+    /// Uses the internal cursor to tail **only new content** — avoids
+    /// re-parsing historical markers (e.g. model-load) that would undo
+    /// a reset.
     pub fn refresh_and_get_perf_stats(&self) -> PerfStats {
-        if self.log_out.exists() {
-            let (log_pos, log_marker) = {
-                let state = self.state.read().expect("lock poisoned");
-                (state.perf_stats.last_log_size, state.perf_stats.last_log_marker.clone())
-            };
-            let (chunk, new_size, reset, new_marker) =
-                tail_log_chunk(&self.log_out, log_pos, &log_marker);
-            let mut state = self.state.write().expect("lock poisoned");
-            if reset {
-                // Log was truncated or rewritten — feed the recovery chunk
-                // (full current file) into perf stats, then advance cursor.
-                feed_perf_stats(&mut state.perf_stats, &chunk);
-                state.perf_stats.last_log_size = new_size;
-                state.perf_stats.last_log_marker = new_marker;
-            } else if !chunk.is_empty() {
-                feed_perf_stats(&mut state.perf_stats, &chunk);
-                state.perf_stats.last_log_size = new_size;
-                state.perf_stats.last_log_marker = new_marker;
-            }
-            refresh_perf_uptime(&mut state.perf_stats);
-            let snapshot = state.perf_stats.clone();
-            drop(state);
-            return snapshot;
-        }
-        // No log file — just refresh uptime from stored timestamp.
-        let mut state = self.state.write().expect("lock poisoned");
-        refresh_perf_uptime(&mut state.perf_stats);
-        state.perf_stats.clone()
+        let mut mon = self.monitoring.write().expect("lock poisoned");
+        mon.refresh();
+        mon.stats_clone()
     }
 
     // -- read-only path properties ------------------------------------------
@@ -1152,8 +1165,17 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(500));
 
-        let (running, _) = svc.is_server_running();
-        assert!(!running, "server should be stopped");
+        // Verify managed process is stopped (pid file removed, original pid dead).
+        // Avoid global is_server_running() fallback which can match unrelated llama-server processes.
+        assert!(
+            !svc.pid_file.exists(),
+            "pid file should be removed after stop"
+        );
+        assert!(
+            !process::is_process_running(pid),
+            "original pid {} should no longer be running",
+            pid
+        );
     }
 
     // ---- Acceptance: stop with no running server returns 0 ----
@@ -1357,6 +1379,7 @@ mod tests {
         let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
 
         // Write log content that triggers perf stats updates.
+        std::fs::create_dir_all(svc.log_out_path().parent().unwrap()).ok();
         std::fs::write(
             svc.log_out_path(),
             "llama_model_loader: loaded model\n\
@@ -1387,6 +1410,7 @@ mod tests {
         let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
 
         // Write log content with model load marker.
+        std::fs::create_dir_all(svc.log_out_path().parent().unwrap()).ok();
         std::fs::write(
             svc.log_out_path(),
             "llama_model_loader: loaded model\n\
@@ -1424,6 +1448,7 @@ mod tests {
         let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
 
         // Seed some stats via log.
+        std::fs::create_dir_all(svc.log_out_path().parent().unwrap()).ok();
         std::fs::write(
             svc.log_out_path(),
             "llama_model_loader: loaded model\n",
