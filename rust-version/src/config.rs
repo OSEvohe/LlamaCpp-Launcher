@@ -70,7 +70,7 @@ fn safe_bool(val: &serde_json::Value, default: bool) -> bool {
 // Legacy MTP migration (mirrors Python ``_normalize_mtp``)
 // ---------------------------------------------------------------------------
 
-fn normalize_mtp(item: &mut serde_json::Map<String, serde_json::Value>) {
+pub fn normalize_mtp(item: &mut serde_json::Map<String, serde_json::Value>) {
     // --- Phase 1: ensure well-typed containers ---
     if !item.contains_key("advanced_favorites")
         || !item.get("advanced_favorites").unwrap().is_array()

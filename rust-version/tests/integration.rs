@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use axum::http::StatusCode;
+use reqwest::StatusCode;
 use llama_launcher::server;
 use llama_launcher::service::LlamaLauncherService;
 use reqwest::Client;

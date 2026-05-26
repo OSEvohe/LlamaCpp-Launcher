@@ -189,11 +189,21 @@ impl<'de> Deserialize<'de> for Profile {
         if let Some(v) = map.get("batch_size").and_then(|v| v.as_i64()) {
             p.batch_size = v;
         }
-        if let Some(v) = map.get("enable_mtp").and_then(|v| v.as_bool()) {
-            p.enable_mtp = v;
+        if let Some(v) = map.get("enable_mtp") {
+            if let Some(b) = v.as_bool() {
+                p.enable_mtp = b;
+            } else if let Some(s) = v.as_str() {
+                p.enable_mtp = s.trim().to_lowercase() == "true";
+            }
         }
-        if let Some(v) = map.get("spec_draft_n_max").and_then(|v| v.as_i64()) {
-            p.spec_draft_n_max = v;
+        if let Some(v) = map.get("spec_draft_n_max") {
+            if let Some(n) = v.as_i64() {
+                p.spec_draft_n_max = n;
+            } else if let Some(s) = v.as_str() {
+                if let Ok(n) = s.parse::<i64>() {
+                    p.spec_draft_n_max = n;
+                }
+            }
         }
         if let Some(v) = map.get("embeddings").and_then(|v| v.as_bool()) {
             p.embeddings = v;

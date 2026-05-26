@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use axum::http::StatusCode;
+use reqwest::StatusCode;
 use llama_launcher::command;
 use llama_launcher::models::{LlamaOption, Profile};
 use llama_launcher::server;

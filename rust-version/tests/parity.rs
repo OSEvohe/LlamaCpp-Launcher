@@ -71,7 +71,7 @@ fn wait_for_server_url(mut child: Child) -> Result<ServerProcess, String> {
     let start = Instant::now();
     while start.elapsed() < READINESS_TIMEOUT {
         if let Ok(Some(status)) = child.try_wait().map(Some) {
-            return Err(format!("child exited before ready (status: {status})"));
+            return Err(format!("child exited before ready (status: {status:?})"));
         }
 
         match rx.recv_timeout(Duration::from_millis(200)) {
@@ -227,7 +227,7 @@ fn parity_state_file_compatibility_scaffold() {
     let profiles = rust_reader.load_profiles();
     assert_eq!(profiles[0].name, "py-wrote-profile");
 
-    rust_reader.save_global(&llama_launcher::models::GlobalSettings {
+    rust_reader.save_global(llama_launcher::models::GlobalSettings {
         llama_server_path: "C:/rust/llama-server.exe".to_string(),
         model_dirs: vec!["C:/models-rust".to_string()],
         api_host: "127.0.0.1".to_string(),
