@@ -505,6 +505,7 @@ async function doLaunch() {
     updateStatusBadge();
     fetchMonitoring();
     fetchProfiles();
+    syncLoadedModel();
   } catch (e) { headerResult(e.message, true); }
 }
 
@@ -516,6 +517,7 @@ async function doStop() {
     updateStatusBadge();
     fetchMonitoring();
     fetchProfiles();
+    syncLoadedModel();
   } catch (e) { headerResult(e.message, true); }
 }
 
@@ -531,6 +533,7 @@ async function doRestart() {
     updateStatusBadge();
     fetchMonitoring();
     fetchProfiles();
+    syncLoadedModel();
   } catch (e) { headerResult(e.message, true); }
 }
 
@@ -1152,7 +1155,7 @@ updateStatusBadge();
 setInterval(updateStatusBadge, 5000);
 setInterval(fetchMonitoring, 8000);
 fetchMonitoring();
-fetchProfiles().then(syncLoadedModel);
+fetchProfiles().finally(function() { syncLoadedModel(); });
 </script>
 </body>
 </html>
