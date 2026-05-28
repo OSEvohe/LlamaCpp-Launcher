@@ -96,6 +96,7 @@ tr:hover td{background:#161b22}
 .mt-16{margin-top:16px}
 .mb-8{margin-bottom:8px}
 .text-sm{font-size:12px;color:#8b949e}
+#loadedModel .model-path{font-family:"Cascadia Code","Fira Code",monospace;font-size:11px;color:#58a6ff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:500px;display:inline-block}
 .text-center{text-align:center}
 .loading{color:#58a6ff;font-style:italic}
 .error-msg{color:#f85149;font-size:12px;margin-top:4px}
@@ -145,6 +146,7 @@ input.switch:checked::after{transform:translateX(18px);background:#fff}
       <span id="statusBadge" class="badge gray">checking...</span>
     </div>
   </div>
+  <div id="loadedModel" class="text-sm" style="margin-bottom:8px"></div>
   <div id="headerResult" class="text-sm" style="margin-bottom:8px"></div>
 
   <!-- Tabs -->
@@ -437,6 +439,32 @@ async function fetchMonitoring() {
     $('#footModelUptime').textContent = dash;
     $('#footLastPrompt').textContent = dash;
   }
+}
+
+async function syncLoadedModel() {
+  try {
+    const d = await api('/api/perf');
+    const path = d && d.loaded_model_path;
+    const el = $('#loadedModel');
+    if (!path) {
+      el.textContent = '';
+      return;
+    }
+    el.innerHTML = `Model: <span class="model-path" title="${esc(path)}">${esc(path)}</span>`;
+    if (!_profilesCache.length) return;
+    const normBase = String(path).replace(/\\/g, '/').split('/').pop().toLowerCase();
+    const idx = _profilesCache.findIndex(p => {
+      const modelPath = String((p && p.model_path) || '');
+      if (!modelPath) return false;
+      if (modelPath === path) return true;
+      const modelBase = modelPath.replace(/\\/g, '/').split('/').pop().toLowerCase();
+      return modelBase && modelBase === normBase;
+    });
+    if (idx >= 0 && idx !== selectedProfileIdx) {
+      selectedProfileIdx = idx;
+      fetchProfiles();
+    }
+  } catch (_e) { /* silent: model may not be loaded yet */ }
 }
 
 function formatDuration(totalSecs) {
@@ -1124,7 +1152,7 @@ updateStatusBadge();
 setInterval(updateStatusBadge, 5000);
 setInterval(fetchMonitoring, 8000);
 fetchMonitoring();
-fetchProfiles();
+fetchProfiles().then(syncLoadedModel);
 </script>
 </body>
 </html>
