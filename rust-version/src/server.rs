@@ -170,6 +170,7 @@ async fn get_perf(State(state): State<SharedState>) -> Json<Value> {
         "prompt_tps": perf.prompt_tps,
         "gen_tps": perf.gen_tps,
         "model_loaded": perf.model_loaded,
+        "loaded_model_path": service.current_model_path(),
         "model_loaded_at": perf.model_loaded_at,
         "model_uptime_secs": perf.model_uptime_secs,
         "last_prompt": perf.last_prompt,

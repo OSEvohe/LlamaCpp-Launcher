@@ -77,11 +77,15 @@ fn coerce_bool(val: &serde_json::Value, field: &str) -> Result<bool, String> {
 // ---------------------------------------------------------------------------
 
 /// Mutable runtime state protected by a single ``RwLock``.
-struct State {}
+struct State {
+    current_model_path: String,
+}
 
 impl Default for State {
     fn default() -> Self {
-        Self {}
+        Self {
+            current_model_path: String::new(),
+        }
     }
 }
 
@@ -635,12 +639,21 @@ impl LlamaLauncherService {
             let mut mon = self.monitoring.write().expect("lock poisoned");
             mon.full_reset();
         }
+        let mut state = self.state.write().expect("lock poisoned");
+        state.current_model_path.clear();
+        for i in 0..cmd.len() {
+            if cmd[i] == "--model" && i + 1 < cmd.len() {
+                state.current_model_path = cmd[i + 1].clone();
+                break;
+            }
+        }
         self.launch_internal(&cmd, exe_path)
     }
 
     /// Stop the running server.
     pub fn stop(&self) -> i32 {
-        let _guard = self.state.write().expect("lock poisoned");
+        let mut state = self.state.write().expect("lock poisoned");
+        state.current_model_path.clear();
         self.stop_internal()
     }
 
@@ -652,7 +665,20 @@ impl LlamaLauncherService {
             mon.full_reset();
         }
         self.stop_internal();
+        let mut state = self.state.write().expect("lock poisoned");
+        state.current_model_path.clear();
+        for i in 0..cmd.len() {
+            if cmd[i] == "--model" && i + 1 < cmd.len() {
+                state.current_model_path = cmd[i + 1].clone();
+                break;
+            }
+        }
         self.launch_internal(&cmd, exe_path)
+    }
+
+    pub fn current_model_path(&self) -> String {
+        let s = self.state.read().expect("lock poisoned");
+        s.current_model_path.clone()
     }
 
     // -- monitoring ---------------------------------------------------------
