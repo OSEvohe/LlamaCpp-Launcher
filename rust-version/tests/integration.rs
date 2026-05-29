@@ -5,6 +5,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use reqwest::StatusCode;
+use llama_launcher::models::Profile;
 use llama_launcher::server;
 use llama_launcher::service::LlamaLauncherService;
 use reqwest::Client;
@@ -236,4 +237,46 @@ async fn startup_regression_concurrent_boot_uses_isolated_tempdirs_and_ports() {
     }
 
     tokio::time::sleep(Duration::from_millis(10)).await;
+}
+
+#[tokio::test]
+async fn startup_auto_apply_failure_is_safe_and_boot_continues() {
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+    svc.save_profiles(vec![Profile {
+        start_on_boot: true,
+        ..Profile::default()
+    }]);
+
+    let result = svc.apply_startup_profile();
+    assert!(result.is_err());
+
+    let state = Arc::new(RwLock::new(svc));
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let server_state = Arc::clone(&state);
+    let handle = tokio::spawn(async move {
+        server::serve(listener, server_state)
+            .await
+            .expect("run test server");
+    });
+
+    let client = Client::new();
+    let base = format!("http://{}", addr);
+
+    let root = client
+        .get(format!("{}/", base))
+        .send()
+        .await
+        .expect("get dashboard");
+    assert_eq!(root.status(), StatusCode::OK);
+
+    let status = client
+        .get(format!("{}/api/status", base))
+        .send()
+        .await
+        .expect("get status");
+    assert_eq!(status.status(), StatusCode::OK);
+
+    handle.abort();
 }

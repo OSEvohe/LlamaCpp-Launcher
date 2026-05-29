@@ -175,6 +175,41 @@ async fn put_profile_update_missing_body_and_out_of_range() {
 }
 
 #[tokio::test]
+async fn put_profile_start_on_boot_persists_and_is_single_enabled() {
+    let ts = boot_server(Some(vec![
+        Profile { name: "one".into(), ..Profile::default() },
+        Profile { name: "two".into(), ..Profile::default() },
+    ]))
+    .await;
+
+    let set_first = ts
+        .client
+        .put(format!("{}/api/profiles/0", ts.base))
+        .json(&json!({ "start_on_boot": true }))
+        .send()
+        .await
+        .expect("set first startup");
+    assert_eq!(set_first.status(), StatusCode::OK);
+    assert_eq!(set_first.json::<Value>().await.expect("first json")["start_on_boot"], true);
+
+    let set_second = ts
+        .client
+        .put(format!("{}/api/profiles/1", ts.base))
+        .json(&json!({ "start_on_boot": true }))
+        .send()
+        .await
+        .expect("set second startup");
+    assert_eq!(set_second.status(), StatusCode::OK);
+    assert_eq!(set_second.json::<Value>().await.expect("second json")["start_on_boot"], true);
+
+    let all = ts.client.get(format!("{}/api/profiles", ts.base)).send().await.expect("get all");
+    assert_eq!(all.status(), StatusCode::OK);
+    let arr = all.json::<Value>().await.expect("all json").as_array().expect("array").clone();
+    assert_eq!(arr[0]["start_on_boot"], false);
+    assert_eq!(arr[1]["start_on_boot"], true);
+}
+
+#[tokio::test]
 async fn put_profile_advanced_fields_and_partial_preserve() {
     let ts = boot_server(Some(vec![Profile {
         name: "keep-me".into(),
@@ -257,6 +292,7 @@ async fn duplicate_profile_crud_and_preserve_fields() {
     assert_eq!(data["advanced_favorites"], json!(["--verbose"]));
     assert_eq!(data["advanced_values"], json!({"--verbose": "1"}));
     assert_eq!(data["advanced_modes"], json!({"--verbose": "flag"}));
+    assert_eq!(data["start_on_boot"], false);
 
     let missing = ts
         .client

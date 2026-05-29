@@ -3,20 +3,50 @@
 //! Reads and writes ``.launcher/global.json`` and ``.launcher/profiles.json``
 //! with identical schema to the Python implementation.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::models::{GlobalSettings, Profile};
 
-/// Repo root directory (parent of `rust-version/`).
-pub fn app_dir() -> PathBuf {
+fn repo_app_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("CARGO_MANIFEST_DIR has no parent")
         .to_path_buf()
 }
 
+fn is_installed_under_program_files(exe_path: &Path) -> bool {
+    let Some(program_files) = std::env::var_os("ProgramFiles") else {
+        return false;
+    };
+    let mut expected_prefix = PathBuf::from(program_files);
+    expected_prefix.push("LLama Launcher");
+    exe_path.starts_with(expected_prefix)
+}
+
+fn installed_app_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    if !is_installed_under_program_files(&exe) {
+        return None;
+    }
+
+    let mut program_data = PathBuf::from(std::env::var_os("ProgramData")?);
+    program_data.push("LLama Launcher");
+    Some(program_data)
+}
+
+/// Application directory used by runtime state files.
+pub fn app_dir() -> PathBuf {
+    installed_app_dir().unwrap_or_else(repo_app_dir)
+}
+
 fn state_dir() -> PathBuf {
     let mut p = app_dir();
+    p.push(".launcher");
+    p
+}
+
+fn repo_state_dir() -> PathBuf {
+    let mut p = repo_app_dir();
     p.push(".launcher");
     p
 }
@@ -33,8 +63,30 @@ fn profiles_file() -> PathBuf {
     p
 }
 
+fn migrate_state_file_if_missing(file_name: &str) {
+    let current_state_dir = state_dir();
+    let legacy_state_dir = repo_state_dir();
+    if current_state_dir == legacy_state_dir {
+        return;
+    }
+
+    let dest = current_state_dir.join(file_name);
+    if dest.exists() {
+        return;
+    }
+
+    let src = legacy_state_dir.join(file_name);
+    if !src.exists() {
+        return;
+    }
+
+    let _ = std::fs::copy(src, dest);
+}
+
 fn ensure_state() {
     std::fs::create_dir_all(state_dir()).ok();
+    migrate_state_file_if_missing("global.json");
+    migrate_state_file_if_missing("profiles.json");
 }
 
 // ---------------------------------------------------------------------------
@@ -366,6 +418,7 @@ mod tests {
                 m
             },
             advanced_favorites: vec!["-np".into(), "-s".into()],
+            start_on_boot: true,
         };
 
         let json = serde_json::to_string(&original).expect("serialize");
@@ -394,6 +447,7 @@ mod tests {
         assert_eq!(original.advanced_values, restored.advanced_values);
         assert_eq!(original.advanced_modes, restored.advanced_modes);
         assert_eq!(original.advanced_favorites, restored.advanced_favorites);
+        assert_eq!(original.start_on_boot, restored.start_on_boot);
     }
 
     // ---- Acceptance: Default GlobalSettings JSON shape ----
@@ -629,6 +683,7 @@ mod tests {
         assert!(actual["advanced_values"].is_object());
         assert!(actual["advanced_modes"].is_object());
         assert!(actual["advanced_favorites"].is_array());
+        assert_eq!(actual["start_on_boot"], false);
     }
 
     // ---- Acceptance: GlobalSettings save → load round-trip ----
@@ -705,6 +760,17 @@ mod tests {
         assert!(profile.advanced_values.is_empty());
         assert!(profile.advanced_modes.is_empty());
         assert!(profile.advanced_favorites.is_empty());
+        assert!(!profile.start_on_boot);
+    }
+
+    #[test]
+    fn test_profile_deserialization_missing_start_on_boot_defaults_false() {
+        let raw = serde_json::json!({
+            "name": "legacy-profile",
+            "model_path": "C:/models/a.gguf"
+        });
+        let profile: Profile = serde_json::from_value(raw).expect("deserialize legacy profile");
+        assert!(!profile.start_on_boot);
     }
 
     // ---- Acceptance: Partial GlobalSettings deserialization fills defaults ----
