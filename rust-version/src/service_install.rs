@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const TASK_NAME: &str = "LLama Launcher";
@@ -49,6 +50,15 @@ fn install_service_args(exe_path: &Path) -> Vec<String> {
     ]
 }
 
+fn config_service_bin_path_args(exe_path: &Path) -> Vec<String> {
+    vec![
+        "config".to_string(),
+        SERVICE_NAME.to_string(),
+        "binPath=".to_string(),
+        format!("\"{}\"", exe_path.display()),
+    ]
+}
+
 fn config_service_delayed_auto_args() -> Vec<String> {
     vec![
         "config".to_string(),
@@ -68,6 +78,48 @@ fn stop_service_args() -> Vec<String> {
 
 fn uninstall_service_args() -> Vec<String> {
     vec!["delete".to_string(), SERVICE_NAME.to_string()]
+}
+
+fn default_install_exe_path(current_exe: &Path) -> PathBuf {
+    let base = std::env::var_os("ProgramFiles")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Program Files"));
+    let file_name = current_exe
+        .file_name()
+        .map(|name| name.to_os_string())
+        .unwrap_or_else(|| "llama-launcher.exe".into());
+
+    base.join("LLama Launcher").join(file_name)
+}
+
+fn stop_service_if_running() -> Result<(), String> {
+    let stop_args = stop_service_args();
+    let stop_output = run_sc(&stop_args, "stop")?;
+    if stop_output.status.success() {
+        return Ok(());
+    }
+
+    let stdout = String::from_utf8_lossy(&stop_output.stdout);
+    if stdout.contains("1062") || stdout.contains("1052") {
+        return Ok(());
+    }
+
+    Err(render_sc_error(&stop_output, "stop"))
+}
+
+fn start_service_after_install() -> Result<(), String> {
+    let start_args = start_service_args();
+    let start_output = run_sc(&start_args, "start")?;
+    if start_output.status.success() {
+        return Ok(());
+    }
+
+    let stdout = String::from_utf8_lossy(&start_output.stdout);
+    if stdout.contains("1056") {
+        return Ok(());
+    }
+
+    Err(render_sc_error(&start_output, "start"))
 }
 
 fn run_sc(args: &[String], action: &str) -> Result<std::process::Output, String> {
@@ -153,31 +205,58 @@ pub fn service_exists() -> Result<bool, String> {
 }
 
 pub fn install_service() -> Result<(), String> {
-    if service_exists()? {
-        return Err(format!(
-            "Windows service '{}' already exists; uninstall it before reinstalling",
-            SERVICE_NAME
-        ));
+    let current_exe =
+        std::env::current_exe().map_err(|err| format!("failed to resolve current executable: {}", err))?;
+    let install_exe = default_install_exe_path(&current_exe);
+    let install_dir = install_exe
+        .parent()
+        .ok_or_else(|| format!("failed to resolve install directory for {}", install_exe.display()))?;
+    let exists = service_exists()?;
+
+    if exists {
+        stop_service_if_running()?;
     }
 
-    let exe =
-        std::env::current_exe().map_err(|err| format!("failed to resolve current executable: {}", err))?;
-    let args = install_service_args(&exe);
-    let output = run_sc(&args, "create")?;
-    if !output.status.success() {
-        return Err(render_sc_error(&output, "install"));
+    fs::create_dir_all(install_dir).map_err(|err| {
+        format!(
+            "failed to create install directory '{}': {}",
+            install_dir.display(),
+            err
+        )
+    })?;
+    fs::copy(&current_exe, &install_exe).map_err(|err| {
+        format!(
+            "failed to copy executable from '{}' to '{}': {}",
+            current_exe.display(),
+            install_exe.display(),
+            err
+        )
+    })?;
+
+    if exists {
+        let config_args = config_service_bin_path_args(&install_exe);
+        let config_output = run_sc(&config_args, "config binPath")?;
+        if !config_output.status.success() {
+            return Err(render_sc_error(&config_output, "update"));
+        }
+    } else {
+        let create_args = install_service_args(&install_exe);
+        let create_output = run_sc(&create_args, "create")?;
+        if !create_output.status.success() {
+            return Err(render_sc_error(&create_output, "install"));
+        }
     }
 
     let delayed_auto_args = config_service_delayed_auto_args();
     let delayed_auto_output = run_sc(&delayed_auto_args, "config delayed-auto start")?;
-    if delayed_auto_output.status.success() {
-        return Ok(());
+    if !delayed_auto_output.status.success() {
+        return Err(render_sc_error(
+            &delayed_auto_output,
+            "configure delayed-auto start for",
+        ));
     }
 
-    Err(render_sc_error(
-        &delayed_auto_output,
-        "configure delayed-auto start for",
-    ))
+    start_service_after_install()
 }
 
 pub fn uninstall_service() -> Result<(), String> {
@@ -185,14 +264,7 @@ pub fn uninstall_service() -> Result<(), String> {
         return Ok(());
     }
 
-    let stop_args = stop_service_args();
-    let stop_output = run_sc(&stop_args, "stop")?;
-    if !stop_output.status.success() {
-        let stdout = String::from_utf8_lossy(&stop_output.stdout);
-        if !stdout.contains("FAILED 1062") && !stdout.contains("FAILED 1052") {
-            return Err(render_sc_error(&stop_output, "stop"));
-        }
-    }
+    stop_service_if_running()?;
 
     let delete_args = uninstall_service_args();
     let delete_output = run_sc(&delete_args, "delete")?;
@@ -282,6 +354,16 @@ mod tests {
                 "delayed-auto".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn test_config_service_bin_path_args() {
+        let exe = Path::new(r"C:\Program Files\LLama Launcher\llama-launcher.exe");
+        let args = config_service_bin_path_args(exe);
+        assert_eq!(args[0], "config");
+        assert_eq!(args[1], SERVICE_NAME);
+        assert_eq!(args[2], "binPath=");
+        assert_eq!(args[3], "\"C:\\Program Files\\LLama Launcher\\llama-launcher.exe\"");
     }
 
     #[test]
