@@ -81,6 +81,14 @@ struct State {
     current_model_path: String,
 }
 
+fn ensure_startup_pid(action: &str, pid: i32) -> Result<(), String> {
+    if pid > 0 {
+        Ok(())
+    } else {
+        Err(format!("startup profile {} failed to start process", action))
+    }
+}
+
 impl Default for State {
     fn default() -> Self {
         Self {
@@ -360,6 +368,7 @@ impl LlamaLauncherService {
             advanced_values: src.advanced_values.clone(),
             advanced_modes: src.advanced_modes.clone(),
             advanced_favorites: src.advanced_favorites.clone(),
+            start_on_boot: false,
         };
         profiles.push(dup.clone());
         self.save_profiles_internal(&profiles);
@@ -414,6 +423,11 @@ impl LlamaLauncherService {
             coerce_int(v, "spec_draft_n_max")?
         } else {
             existing.spec_draft_n_max
+        };
+        let start_on_boot = if let Some(v) = profile_data.get("start_on_boot") {
+            coerce_bool(v, "start_on_boot")?
+        } else {
+            existing.start_on_boot
         };
 
         let updated = Profile {
@@ -512,9 +526,28 @@ impl LlamaLauncherService {
                         .collect()
                 })
                 .unwrap_or_else(|| existing.advanced_favorites.clone()),
+            start_on_boot,
         };
 
         profiles[idx] = updated.clone();
+        if profiles[idx].start_on_boot {
+            for (i, profile) in profiles.iter_mut().enumerate() {
+                if i != idx {
+                    profile.start_on_boot = false;
+                }
+            }
+        } else {
+            let mut seen_start_on_boot = false;
+            for profile in profiles.iter_mut() {
+                if profile.start_on_boot {
+                    if seen_start_on_boot {
+                        profile.start_on_boot = false;
+                    } else {
+                        seen_start_on_boot = true;
+                    }
+                }
+            }
+        }
         self.save_profiles_internal(&profiles);
         Ok(updated)
     }
@@ -674,6 +707,35 @@ impl LlamaLauncherService {
             }
         }
         self.launch_internal(&cmd, exe_path)
+    }
+
+    /// Apply the startup profile if one is enabled.
+    pub fn apply_startup_profile(&self) -> Result<(), String> {
+        let profiles = self.load_profiles();
+        let selected_idx = profiles.iter().position(|p| p.start_on_boot);
+        let Some(idx) = selected_idx else {
+            return Ok(());
+        };
+        let profile = &profiles[idx];
+
+        let settings = self.load_global();
+        let exe_path = settings.llama_server_path;
+        if exe_path.trim().is_empty() {
+            return Err("no llama-server path configured".to_string());
+        }
+
+        let options = self.load_options(&exe_path)?;
+        let cmd = self.build_command(profile, &exe_path, &options)?;
+
+        let (running, _) = self.is_server_running();
+        if running {
+            let pid = self.restart(cmd, &exe_path);
+            ensure_startup_pid("restart", pid)?;
+        } else {
+            let pid = self.launch(cmd, &exe_path);
+            ensure_startup_pid("launch", pid)?;
+        }
+        Ok(())
     }
 
     pub fn current_model_path(&self) -> String {
@@ -1368,6 +1430,7 @@ mod tests {
         data.insert("threads".into(), serde_json::json!(16));
         data.insert("enable_mtp".into(), serde_json::json!(true));
         data.insert("spec_draft_n_max".into(), serde_json::json!(5));
+        data.insert("start_on_boot".into(), serde_json::json!(true));
         svc.update_profile(1, &data).expect("update");
 
         // Duplicate.
@@ -1377,9 +1440,63 @@ mod tests {
         assert_eq!(dup.threads, 16);
         assert!(dup.enable_mtp);
         assert_eq!(dup.spec_draft_n_max, 5);
+        assert!(!dup.start_on_boot);
+        let profiles = svc.load_profiles();
+        assert!(profiles[1].start_on_boot);
+        assert!(!profiles[2].start_on_boot);
         // Defaults preserved.
         assert_eq!(dup.host, "127.0.0.1");
         assert_eq!(dup.port, 8080);
+    }
+
+    #[test]
+    fn test_update_profile_start_on_boot_clears_other_profiles() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+
+        svc.add_profile("p1");
+        svc.add_profile("p2");
+
+        let mut first = HashMap::new();
+        first.insert("start_on_boot".into(), serde_json::json!(true));
+        svc.update_profile(1, &first).expect("enable p1");
+
+        let mut second = HashMap::new();
+        second.insert("start_on_boot".into(), serde_json::json!(true));
+        svc.update_profile(2, &second).expect("enable p2");
+
+        let profiles = svc.load_profiles();
+        assert!(!profiles[0].start_on_boot);
+        assert!(!profiles[1].start_on_boot);
+        assert!(profiles[2].start_on_boot);
+    }
+
+    #[test]
+    fn test_update_profile_enforces_single_start_on_boot_even_when_disabling() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+
+        svc.save_profiles(vec![
+            Profile { name: "a".into(), start_on_boot: true, ..Profile::default() },
+            Profile { name: "b".into(), start_on_boot: true, ..Profile::default() },
+            Profile { name: "c".into(), start_on_boot: false, ..Profile::default() },
+        ]);
+
+        let mut update = HashMap::new();
+        update.insert("start_on_boot".into(), serde_json::json!(false));
+        svc.update_profile(2, &update).expect("update profile");
+
+        let profiles = svc.load_profiles();
+        assert!(profiles[0].start_on_boot);
+        assert!(!profiles[1].start_on_boot);
+        assert!(!profiles[2].start_on_boot);
+    }
+
+    #[test]
+    fn test_ensure_startup_pid_errors_on_zero() {
+        assert!(ensure_startup_pid("launch", 0).is_err());
+        assert!(ensure_startup_pid("restart", -1).is_err());
+        assert!(ensure_startup_pid("launch", 1234).is_ok());
     }
 
     // ---- Acceptance: perf stats initial state ----

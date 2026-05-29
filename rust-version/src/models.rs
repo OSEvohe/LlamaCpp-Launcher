@@ -107,6 +107,7 @@ pub struct Profile {
     pub advanced_values: HashMap<String, String>,
     pub advanced_modes: HashMap<String, String>,
     pub advanced_favorites: Vec<String>,
+    pub start_on_boot: bool,
 }
 
 impl Default for Profile {
@@ -135,6 +136,7 @@ impl Default for Profile {
             advanced_values: HashMap::new(),
             advanced_modes: HashMap::new(),
             advanced_favorites: Vec::new(),
+            start_on_boot: false,
         }
     }
 }
@@ -234,6 +236,13 @@ impl<'de> Deserialize<'de> for Profile {
                 .iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect();
+        }
+        if let Some(v) = map.get("start_on_boot") {
+            if let Some(b) = v.as_bool() {
+                p.start_on_boot = b;
+            } else if let Some(s) = v.as_str() {
+                p.start_on_boot = s.trim().to_lowercase() == "true";
+            }
         }
         Ok(p)
     }

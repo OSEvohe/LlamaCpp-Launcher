@@ -124,6 +124,12 @@ fn handle_uninstall_service() {
     }
 }
 
+fn apply_startup_profile_on_boot(service: &LlamaLauncherService) {
+    if let Err(err) = service.apply_startup_profile() {
+        eprintln!("Warning: failed to auto-apply startup profile: {}", err);
+    }
+}
+
 async fn run_api_server(host: String, port: i64) -> Result<(), String> {
     let bind_addr = format!("{}:{}", host, port);
 
@@ -135,7 +141,9 @@ async fn run_api_server(host: String, port: i64) -> Result<(), String> {
         .expect("listener should have local address");
     println!("Starting LLama Launcher API server on {}", local_addr);
 
-    let state: SharedState = Arc::new(RwLock::new(LlamaLauncherService::new(None)));
+    let service = LlamaLauncherService::new(None);
+    apply_startup_profile_on_boot(&service);
+    let state: SharedState = Arc::new(RwLock::new(service));
     server::serve(listener, state)
         .await
         .map_err(|err| format!("API server failed - {}", err))
@@ -252,7 +260,9 @@ fn run_windows_service(arguments: Vec<OsString>) -> Result<(), String> {
         .set_service_status(running)
         .map_err(|err| format!("failed to report service running status: {}", err))?;
 
-    let state: SharedState = Arc::new(RwLock::new(LlamaLauncherService::new(None)));
+    let service = LlamaLauncherService::new(None);
+    apply_startup_profile_on_boot(&service);
+    let state: SharedState = Arc::new(RwLock::new(service));
     let service_for_shutdown = Arc::clone(&state);
     let serve_result = runtime.block_on(async move {
         server::serve_with_shutdown(listener, state, async move {

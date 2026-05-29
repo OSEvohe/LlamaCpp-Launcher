@@ -380,6 +380,7 @@ mod tests {
             advanced_values: HashMap::new(),
             advanced_modes: HashMap::new(),
             advanced_favorites: Vec::new(),
+            start_on_boot: false,
         }
     }
 
