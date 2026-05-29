@@ -216,6 +216,7 @@ input.switch:checked::after{transform:translateX(18px);background:#fff}
           <select id="peKvCache"><option value="f32">f32</option><option value="f16" selected>f16</option><option value="bf16">bf16</option><option value="q8_0">q8_0</option><option value="q4_0">q4_0</option><option value="q4_1">q4_1</option><option value="iq4_nl">iq4_nl</option><option value="q5_0">q5_0</option><option value="q5_1">q5_1</option></select>
         </div>
         <div class="form-row"><label>Extra Args</label><input id="peExtraArgs" type="text"></div>
+        <div class="form-row"><label>Start on Boot</label><input id="peStartOnBoot" type="checkbox" class="switch"></div>
         <div class="btn-group">
           <button class="btn primary" onclick="doSaveProfile()">Save</button>
           <button class="btn small" onclick="doDuplicateProfile()">&#8987; Duplicate</button>
@@ -591,6 +592,7 @@ async function openProfileEditor(index) {
   $('#peFlashAttn').value = p.flash_attn_mode || 'off';
   $('#peKvCache').value = p.kv_cache_type || 'f16';
   $('#peExtraArgs').value = p.extra_args || '';
+  $('#peStartOnBoot').checked = !!p.start_on_boot;
   $('#peResult').textContent = '';
   syncAdvProfileIdx(index, true);
 }
@@ -678,7 +680,11 @@ async function doSaveProfile() {
     flash_attn_mode: $('#peFlashAttn').value,
     kv_cache_type: $('#peKvCache').value,
     extra_args: $('#peExtraArgs').value.trim(),
+    start_on_boot: $('#peStartOnBoot').checked,
   };
+  if (body.start_on_boot) {
+    _profilesCache.forEach((p, i) => { if (i !== index) p.start_on_boot = false; });
+  }
   if (cachedProfile) {
     if (cachedProfile.advanced_favorites) body.advanced_favorites = cachedProfile.advanced_favorites;
     if (cachedProfile.advanced_values) body.advanced_values = cachedProfile.advanced_values;
