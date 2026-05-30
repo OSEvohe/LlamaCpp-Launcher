@@ -6,10 +6,10 @@ Version Rust de LLama Launcher (API + dashboard web pour `llama-server`).
 
 ```powershell
 # Debug (convention: port 7891)
-cargo run -- --api-host 192.168.192.1 --api-port 7891
+cargo run -- --api-host <YOUR_LAN_IP> --api-port 7891
 
 # Release locale
-cargo run --release -- --api-host 192.168.192.1 --api-port 7890
+cargo run --release -- --api-host <YOUR_LAN_IP> --api-port 7890
 ```
 
 ## Build
@@ -26,7 +26,7 @@ Binaires:
 ## Service Windows (release)
 
 ```powershell
-sc.exe create LlamaLauncher binPath= '"C:\Users\Shadow\Documents\LLama Launcher\rust-version\target\release\llama-launcher.exe" --api-host 192.168.192.1 --api-port 7890' start= auto DisplayName= 'LLama Launcher'
+sc.exe create LlamaLauncher binPath= '"%ProgramFiles%\LLama Launcher\llama-launcher.exe" --api-host <YOUR_LAN_IP> --api-port 7890' start= auto DisplayName= 'LLama Launcher'
 sc.exe start LlamaLauncher
 ```
 

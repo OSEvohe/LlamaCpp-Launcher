@@ -3,8 +3,8 @@
 ## Quick start
 
 ```powershell
-cargo run --manifest-path rust-version\Cargo.toml -- --api-host 192.168.192.1 --api-port 7891
-cargo run --release --manifest-path rust-version\Cargo.toml -- --api-host 192.168.192.1 --api-port 7890
+cargo run --manifest-path rust-version\Cargo.toml -- --api-host <YOUR_LAN_IP> --api-port 7891
+cargo run --release --manifest-path rust-version\Cargo.toml -- --api-host <YOUR_LAN_IP> --api-port 7890
 ```
 
 ## Service management
@@ -53,5 +53,5 @@ Files:
 
 ## Conventions
 
-- Release service en `192.168.192.1:7890`.
-- Debug local en `192.168.192.1:7891`.
+- Release service en `<YOUR_LAN_IP>:7890`.
+- Debug local en `<YOUR_LAN_IP>:7891`.
