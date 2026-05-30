@@ -357,6 +357,7 @@ mod tests {
 
     fn make_test_profile() -> Profile {
         Profile {
+            uid: "test-uid".into(),
             name: "test".into(),
             model_path: "/models/test.gguf".into(),
             host: "127.0.0.1".into(),

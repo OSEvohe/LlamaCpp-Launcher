@@ -5,7 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::models::{GlobalSettings, Profile};
+use std::collections::HashSet;
+
+use crate::models::{new_profile_uid, GlobalSettings, Profile};
 
 fn repo_app_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -249,6 +251,22 @@ pub fn normalize_mtp(item: &mut serde_json::Map<String, serde_json::Value>) {
     );
 }
 
+pub fn normalize_profile_uids(profiles: &mut [Profile]) -> bool {
+    let mut seen = HashSet::new();
+    let mut changed = false;
+
+    for profile in profiles.iter_mut() {
+        let uid = profile.uid.trim();
+        if uid.is_empty() || seen.contains(uid) {
+            profile.uid = new_profile_uid();
+            changed = true;
+        }
+        seen.insert(profile.uid.clone());
+    }
+
+    changed
+}
+
 // ---------------------------------------------------------------------------
 // Global settings persistence
 // ---------------------------------------------------------------------------
@@ -357,10 +375,14 @@ pub fn load_profiles() -> Vec<Profile> {
     }
 
     if profiles.is_empty() {
-        vec![Profile::default()]
-    } else {
-        profiles
+        return vec![Profile::default()];
     }
+
+    if normalize_profile_uids(&mut profiles) {
+        save_profiles(&profiles);
+    }
+
+    profiles
 }
 
 /// Save profiles to ``.launcher/profiles.json``.
@@ -386,6 +408,7 @@ mod tests {
     #[test]
     fn test_profile_roundtrip() {
         let original = Profile {
+            uid: "test-uid".into(),
             name: "test-profile".into(),
             model_path: "/models/test.gguf".into(),
             host: "0.0.0.0".into(),
@@ -425,6 +448,7 @@ mod tests {
         let restored: Profile = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(original.name, restored.name);
+        assert_eq!(original.uid, restored.uid);
         assert_eq!(original.model_path, restored.model_path);
         assert_eq!(original.host, restored.host);
         assert_eq!(original.port, restored.port);
@@ -805,5 +829,40 @@ mod tests {
 
         // Only string entries survive
         assert_eq!(gs.model_dirs, vec!["C:\\models", "D:\\llm"]);
+    }
+
+    #[test]
+    fn test_normalize_profile_uids_fills_missing_blank_and_duplicates() {
+        let mut profiles = vec![
+            Profile {
+                uid: String::new(),
+                name: "p0".into(),
+                ..Profile::default()
+            },
+            Profile {
+                uid: "dup".into(),
+                name: "p1".into(),
+                ..Profile::default()
+            },
+            Profile {
+                uid: "dup".into(),
+                name: "p2".into(),
+                ..Profile::default()
+            },
+            Profile {
+                uid: "   ".into(),
+                name: "p3".into(),
+                ..Profile::default()
+            },
+        ];
+
+        let changed = normalize_profile_uids(&mut profiles);
+        assert!(changed);
+
+        let mut seen = std::collections::HashSet::new();
+        for p in &profiles {
+            assert!(!p.uid.trim().is_empty());
+            assert!(seen.insert(p.uid.clone()));
+        }
     }
 }

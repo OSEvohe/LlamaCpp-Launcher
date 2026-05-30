@@ -209,19 +209,6 @@ fn prepare_launch_data(
     service: &LlamaLauncherService,
 ) -> Result<(String, Vec<String>), ApiError> {
     let body = body.ok_or_else(|| ApiError::bad_request("missing request body"))?;
-    let profile_index = match body.get("profile_index") {
-        None => 0_i64,
-        Some(Value::Bool(_)) => return Err(ApiError::bad_request("profile_index must be an integer")),
-        Some(v) => v
-            .as_i64()
-            .ok_or_else(|| ApiError::bad_request("profile_index must be an integer"))?,
-    };
-    if profile_index < 0 {
-        return Err(ApiError::bad_request(&format!(
-            "profile index {} out of range",
-            profile_index
-        )));
-    }
     let exe_path = match body.get("exe_path") {
         None => String::new(),
         Some(Value::String(v)) => v.clone(),
@@ -229,13 +216,37 @@ fn prepare_launch_data(
     };
 
     let profiles = service.load_profiles();
-    let idx = profile_index as usize;
-    if idx >= profiles.len() {
-        return Err(ApiError::bad_request(&format!(
-            "profile index {} out of range",
-            profile_index
-        )));
-    }
+    let idx = if let Some(profile_uid) = body.get("profile_uid") {
+        let uid = profile_uid
+            .as_str()
+            .ok_or_else(|| ApiError::bad_request("profile_uid must be a string"))?;
+        profiles
+            .iter()
+            .position(|p| p.uid == uid)
+            .ok_or_else(|| ApiError::bad_request(&format!("profile uid {} not found", uid)))?
+    } else {
+        let profile_index = match body.get("profile_index") {
+            None => 0_i64,
+            Some(Value::Bool(_)) => return Err(ApiError::bad_request("profile_index must be an integer")),
+            Some(v) => v
+                .as_i64()
+                .ok_or_else(|| ApiError::bad_request("profile_index must be an integer"))?,
+        };
+        if profile_index < 0 {
+            return Err(ApiError::bad_request(&format!(
+                "profile index {} out of range",
+                profile_index
+            )));
+        }
+        let idx = profile_index as usize;
+        if idx >= profiles.len() {
+            return Err(ApiError::bad_request(&format!(
+                "profile index {} out of range",
+                profile_index
+            )));
+        }
+        idx
+    };
     let profile = &profiles[idx];
 
     let settings = service.load_global();
@@ -289,17 +300,12 @@ async fn post_restart(
 
 async fn get_profile(
     State(state): State<SharedState>,
-    Path(index): Path<i64>,
+    Path(profile_ref): Path<String>,
 ) -> Result<Json<Profile>, ApiError> {
-    if index < 0 {
-        return Err(ApiError::not_found(&format!("profile index {} out of range", index)));
-    }
-    let idx = index as usize;
     let service = state.read().expect("service lock poisoned");
     let profiles = service.load_profiles();
-    if idx >= profiles.len() {
-        return Err(ApiError::not_found(&format!("profile index {} out of range", index)));
-    }
+    let idx = resolve_profile_index(&profiles, &profile_ref)
+        .ok_or_else(|| ApiError::not_found(&format!("profile {} not found", profile_ref)))?;
     Ok(Json(profiles[idx].clone()))
 }
 
@@ -321,7 +327,7 @@ async fn post_profile(
 
 async fn put_profile(
     State(state): State<SharedState>,
-    Path(index): Path<i64>,
+    Path(profile_ref): Path<String>,
     request: Request,
 ) -> Result<Json<Profile>, ApiError> {
     let body = parse_json_object(request, false)
@@ -330,7 +336,11 @@ async fn put_profile(
     let data: HashMap<String, Value> = body.into_iter().collect();
 
     let service = state.read().expect("service lock poisoned");
-    let updated = service.update_profile(index, &data).map_err(|err| {
+    let profiles = service.load_profiles();
+    let idx = resolve_profile_index(&profiles, &profile_ref)
+        .ok_or_else(|| ApiError::not_found(&format!("profile {} not found", profile_ref)))?;
+
+    let updated = service.update_profile(idx as i64, &data).map_err(|err| {
         if err.contains("out of range") {
             ApiError::not_found(&err)
         } else {
@@ -342,24 +352,40 @@ async fn put_profile(
 
 async fn delete_profile(
     State(state): State<SharedState>,
-    Path(index): Path<i64>,
+    Path(profile_ref): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let service = state.read().expect("service lock poisoned");
-    if !service.delete_profile(index) {
-        return Err(ApiError::not_found(&format!("profile index {} out of range", index)));
+    let profiles = service.load_profiles();
+    let idx = resolve_profile_index(&profiles, &profile_ref)
+        .ok_or_else(|| ApiError::not_found(&format!("profile {} not found", profile_ref)))?;
+    if !service.delete_profile(idx as i64) {
+        return Err(ApiError::not_found(&format!("profile {} not found", profile_ref)));
     }
-    Ok(Json(serde_json::json!({ "deleted": index })))
+    Ok(Json(serde_json::json!({ "deleted": idx })))
 }
 
 async fn duplicate_profile(
     State(state): State<SharedState>,
-    Path(index): Path<i64>,
+    Path(profile_ref): Path<String>,
 ) -> Result<(StatusCode, Json<Profile>), ApiError> {
     let service = state.read().expect("service lock poisoned");
+    let profiles = service.load_profiles();
+    let idx = resolve_profile_index(&profiles, &profile_ref)
+        .ok_or_else(|| ApiError::not_found(&format!("profile {} not found", profile_ref)))?;
     let profile = service
-        .duplicate_profile(index)
+        .duplicate_profile(idx as i64)
         .map_err(|err| ApiError::not_found(&err))?;
     Ok((StatusCode::CREATED, Json(profile)))
+}
+
+fn resolve_profile_index(profiles: &[Profile], profile_ref: &str) -> Option<usize> {
+    if let Some(uid_index) = profiles.iter().position(|p| p.uid == profile_ref) {
+        return Some(uid_index);
+    }
+    if let Ok(index) = profile_ref.parse::<usize>() {
+        return (index < profiles.len()).then_some(index);
+    }
+    None
 }
 
 async fn get_settings(State(state): State<SharedState>) -> Json<GlobalSettings> {
@@ -469,12 +495,14 @@ mod tests {
             .await
             .expect("create profile");
         assert_eq!(response.status(), StatusCode::CREATED);
+        let created: Profile = response.json().await.expect("parse created profile");
+        let created_uid = created.uid.clone();
 
         let response = client
-            .get(format!("{}/api/profiles/1", base))
+            .get(format!("{}/api/profiles/{}", base, created_uid))
             .send()
             .await
-            .expect("get profile by index");
+            .expect("get profile by uid");
         assert_eq!(response.status(), StatusCode::OK);
 
         let response = client
@@ -767,5 +795,74 @@ mod tests {
         assert_eq!(reset_body.get("reset").and_then(|v| v.as_bool()), Some(true));
 
         handle.abort();
+    }
+
+    #[test]
+    fn resolve_profile_index_prefers_exact_uid_over_numeric_index() {
+        let profiles = vec![
+            Profile {
+                uid: "42".into(),
+                name: "uid-42".into(),
+                ..Profile::default()
+            },
+            Profile {
+                uid: "other".into(),
+                name: "p1".into(),
+                ..Profile::default()
+            },
+        ];
+
+        let idx = resolve_profile_index(&profiles, "42").expect("resolve uid");
+        assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn prepare_launch_data_prefers_profile_uid_over_profile_index() {
+        let temp = tempdir().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(temp.path().to_path_buf()));
+
+        let exe_output = std::process::Command::new("where")
+            .arg("where.exe")
+            .output()
+            .expect("find where.exe");
+        let exe_path = String::from_utf8_lossy(&exe_output.stdout)
+            .lines()
+            .next()
+            .expect("where.exe path")
+            .trim()
+            .to_string();
+
+        svc.save_global(GlobalSettings {
+            llama_server_path: exe_path.clone(),
+            model_dirs: Vec::new(),
+            api_host: "127.0.0.1".into(),
+            api_port: 0,
+        });
+
+        let p0 = Profile {
+            uid: "uid-a".into(),
+            model_path: temp.path().join("a.gguf").to_string_lossy().to_string(),
+            ..Profile::default()
+        };
+        let p1 = Profile {
+            uid: "uid-b".into(),
+            model_path: temp.path().join("b.gguf").to_string_lossy().to_string(),
+            ..Profile::default()
+        };
+        std::fs::write(&p0.model_path, "a").expect("write model a");
+        std::fs::write(&p1.model_path, "b").expect("write model b");
+        svc.save_profiles(vec![p0.clone(), p1.clone()]);
+
+        let mut body = Map::new();
+        body.insert("profile_uid".into(), Value::String("uid-b".into()));
+        body.insert("profile_index".into(), Value::Number(0.into()));
+        body.insert("exe_path".into(), Value::String(exe_path));
+
+        let (_resolved_exe, cmd) = prepare_launch_data(Some(body), &svc).expect("prepare launch");
+
+        assert!(
+            cmd.iter().any(|arg| arg == &p1.model_path),
+            "command should contain selected profile model path"
+        );
     }
 }

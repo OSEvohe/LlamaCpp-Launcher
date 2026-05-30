@@ -192,6 +192,9 @@ impl LlamaLauncherService {
                             if profiles.is_empty() {
                                 vec![Profile::default()]
                             } else {
+                                if config::normalize_profile_uids(&mut profiles) {
+                                    self.save_profiles_internal(&profiles);
+                                }
                                 profiles
                             }
                         }
@@ -345,6 +348,7 @@ impl LlamaLauncherService {
         }
         let src = &profiles[idx];
         let dup = Profile {
+            uid: crate::models::new_profile_uid(),
             name: format!("{} (copy)", src.name),
             model_path: src.model_path.clone(),
             host: src.host.clone(),
@@ -431,6 +435,7 @@ impl LlamaLauncherService {
         };
 
         let updated = Profile {
+            uid: existing.uid.clone(),
             name: profile_data
                 .get("name")
                 .and_then(|v| v.as_str())

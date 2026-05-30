@@ -1,5 +1,18 @@
 use serde::{de::Deserializer, Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+static PROFILE_UID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+pub fn new_profile_uid() -> String {
+    let now_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let counter = PROFILE_UID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("p-{:x}{:x}", now_nanos, counter)
+}
 
 /// CLI option descriptor (mirrors Python ``LlamaOption`` dataclass).
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -84,6 +97,7 @@ impl<'de> Deserialize<'de> for GlobalSettings {
 /// where dataclass defaults fill any absent keys.
 #[derive(Serialize, Debug, Clone)]
 pub struct Profile {
+    pub uid: String,
     pub name: String,
     pub model_path: String,
     pub host: String,
@@ -113,6 +127,7 @@ pub struct Profile {
 impl Default for Profile {
     fn default() -> Self {
         Self {
+            uid: new_profile_uid(),
             name: "default".into(),
             model_path: String::new(),
             host: "127.0.0.1".into(),
@@ -148,6 +163,10 @@ impl<'de> Deserialize<'de> for Profile {
     {
         let map = HashMap::<String, serde_json::Value>::deserialize(deserializer)?;
         let mut p = Profile::default();
+
+        if let Some(v) = map.get("uid").and_then(|v| v.as_str()) {
+            p.uid = v.to_string();
+        }
 
         if let Some(v) = map.get("name").and_then(|v| v.as_str()) {
             p.name = v.to_string();
