@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::models::LlamaOption;
 
-/// Default llama-server path (mirrors Python ``DEFAULT_LLAMA_SERVER``).
+/// Default llama-server path (mirrors legacy ``DEFAULT_LLAMA_SERVER``).
 const DEFAULT_LLAMA_SERVER: &str = r"C:\llama-cpp\llama-server.exe";
 
 /// Resolve a raw path string to a ``PathBuf`` pointing at ``llama-server.exe``.
@@ -16,12 +16,12 @@ const DEFAULT_LLAMA_SERVER: &str = r"C:\llama-cpp\llama-server.exe";
 /// If *raw* is a directory, appends ``llama-server.exe``.
 /// If *raw* is empty after stripping (before quote removal), returns the default path.
 ///
-/// Mirrors Python: `if not str(raw).strip(): return DEFAULT_LLAMA_SERVER`
+/// Mirrors legacy behavior: `if not str(raw).strip(): return DEFAULT_LLAMA_SERVER`
 /// checks the original trimmed string, NOT the post-quote-stripped version.
 /// So ``raw='""'`` yields ``Path("")`` → current dir → ``./llama-server.exe``,
 /// NOT the default path.
 pub fn resolve_llama_server_path(raw: &str) -> PathBuf {
-    // Python checks emptiness on the original trimmed string (before quote strip)
+    // Legacy checks emptiness on the original trimmed string (before quote strip)
     if raw.trim().is_empty() {
         return PathBuf::from(DEFAULT_LLAMA_SERVER);
     }
@@ -37,7 +37,7 @@ pub fn resolve_llama_server_path(raw: &str) -> PathBuf {
 
 /// Parse ``llama-server --help`` text into a map of canonical option keys.
 ///
-/// Mirrors Python ``parse_help_options()``: groups consecutive lines starting
+/// Mirrors legacy ``parse_help_options()``: groups consecutive lines starting
 /// with ``-X`` or ``--X`` into blocks, then extracts aliases, arity, defaults
 /// and descriptions.
 pub fn parse_help_options(help_text: &str) -> HashMap<String, LlamaOption> {
@@ -80,7 +80,7 @@ pub fn parse_help_options(help_text: &str) -> HashMap<String, LlamaOption> {
     for block in &sections {
         let first = block[0].trim();
 
-        // Split first line by 2+ spaces (mirrors Python re.split(r"\s{2,}", first, maxsplit=1))
+        // Split first line by 2+ spaces (mirrors legacy re.split(r"\s{2,}", first, maxsplit=1))
         let parts: Vec<&str> = split_by_double_space(first);
         let names_raw = parts[0].trim();
         let mut desc = if parts.len() > 1 {
@@ -212,7 +212,7 @@ pub fn load_options_from_exe(exe_path: &Path) -> HashMap<String, LlamaOption> {
 // ---------------------------------------------------------------------------
 
 /// Split a string by 2 or more consecutive whitespace characters (max 1 split).
-/// Mirrors Python ``re.split(r"\s{2,}", s, maxsplit=1)``.
+/// Mirrors legacy ``re.split(r"\s{2,}", s, maxsplit=1)``.
 fn split_by_double_space(s: &str) -> Vec<&str> {
     let mut i = 0;
     let bytes = s.as_bytes();
@@ -258,7 +258,7 @@ fn collapse_whitespace(s: &str) -> String {
 
 /// Extract the default value from a description string.
 ///
-/// Matches Python ``re.search(r"\(default:\s*([^\)]+)\)", desc)``.
+/// Matches legacy ``re.search(r"\(default:\s*([^\)]+)\)", desc)``.
 fn extract_default(desc: &str) -> String {
     // Find "(default: X)" pattern
     if let Some(start) = desc.find("(default:") {
@@ -323,7 +323,7 @@ Available options:
     /// Acceptance: negative flags are detected (--no-X when --X exists in same block).
     #[test]
     fn test_parse_help_options_negative_flag() {
-        // Python detects negative flags within a single comma-separated block
+        // Legacy detects negative flags within a single comma-separated block
         let help_text = r#"
   --flash-attn, --no-flash-attn   enable/disable flash attention (default: off)
 "#;
@@ -377,14 +377,14 @@ Available options:
 
     /// Acceptance: resolve_llama_server_path with raw='""' does NOT return default.
     ///
-    /// Python behavior: ``str('""').strip()`` → ``'""'`` (not empty),
+    /// Legacy behavior: ``str('""').strip()`` → ``'""'`` (not empty),
     /// so the default is NOT returned. Instead, ``Path('""'.strip('"'))`` →
     /// ``Path('')`` → current directory → ``./llama-server.exe``.
     /// Rust mirrors this: ``raw.trim()`` → ``"\"\""`` (not empty),
     /// so we proceed to ``PathBuf::from("")`` which is the current dir.
     #[test]
     fn test_resolve_llama_server_path_empty_quoted() {
-        // raw = '""' — Python does NOT treat this as empty
+        // raw = '""' — legacy does NOT treat this as empty
         let result = resolve_llama_server_path(r#"""#);
         // Should NOT be the default path
         assert_ne!(result.to_string_lossy(), DEFAULT_LLAMA_SERVER);
@@ -436,7 +436,7 @@ Just some description.
         assert!(default_val3.is_empty());
     }
 
-    /// Acceptance: split_by_double_space mirrors Python regex behavior.
+    /// Acceptance: split_by_double_space mirrors legacy regex behavior.
     #[test]
     fn test_split_by_double_space() {
         assert_eq!(split_by_double_space("--host HOST    description"), vec!["--host HOST", "description"]);

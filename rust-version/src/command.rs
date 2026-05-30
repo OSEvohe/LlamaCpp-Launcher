@@ -12,7 +12,7 @@ use crate::models::{LlamaOption, Profile};
 /// Error returned by ``shlex_split`` when the input string contains an
 /// unmatched opening quote.
 ///
-/// Mirrors Python ``shlex.split(s, posix=False)`` which raises
+/// Mirrors legacy ``shlex.split(s, posix=False)`` behavior which raises
 /// ``ValueError: No closing quotation``.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ShlexError {
@@ -91,10 +91,10 @@ pub fn favorite_string_value(
 /// Assemble the full command-line list for llama-server.
 ///
 /// This is the pure business-logic part: it does NOT interact with the UI.
-/// Mirrors Python ``cmd_module.build_command()`` exactly.
+/// Mirrors legacy ``build_command()`` behavior.
 ///
 /// Returns ``Err(ShlexError)`` if any extra_args or advanced_values contain
-/// an unmatched opening quote (matching Python ``ValueError`` propagation).
+/// an unmatched opening quote (matching legacy ``ValueError`` propagation).
 pub fn build_command(
     exe: &Path,
     profile: &Profile,
@@ -102,7 +102,7 @@ pub fn build_command(
 ) -> Result<Vec<String>, ShlexError> {
     let mut cmd: Vec<String> = Vec::new();
 
-    // Base arguments (fixed order, matching Python exactly)
+    // Base arguments (fixed order, matching legacy behavior)
     cmd.push(exe.to_string_lossy().to_string());
     cmd.push("--model".into());
     cmd.push(profile.model_path.clone());
@@ -189,12 +189,12 @@ pub fn build_command(
 }
 
 // ---------------------------------------------------------------------------
-// shlex-like splitting (posix=False, matching Python behavior)
+// shlex-like splitting (posix=False, matching legacy behavior)
 // ---------------------------------------------------------------------------
 
 /// Split a string using shlex-like rules (posix=False).
 ///
-/// Mirrors Python ``shlex.split(s, posix=False)`` exactly:
+/// Mirrors legacy ``shlex.split(s, posix=False)`` behavior:
 /// - Space/tab/newline/CR are whitespace delimiters.
 /// - Both single ``'`` and double ``"`` quotes are grouping characters.
 /// - Quotes are PRESERVED in output (not stripped).
@@ -204,7 +204,7 @@ pub fn build_command(
 /// - When a group closes, the token is completed immediately (pushed).
 /// - A quote char appearing mid-token (non-first position) is a regular char.
 /// - A different quote type inside a group is a regular char.
-/// - Unmatched opening quote returns ``Err(ShlexError)`` (Python raises ``ValueError``).
+/// - Unmatched opening quote returns ``Err(ShlexError)`` (legacy raises ``ValueError``).
 fn shlex_split(s: &str) -> Result<Vec<String>, ShlexError> {
     let mut tokens: Vec<String> = Vec::new();
     let mut current: String = String::new();
@@ -247,7 +247,7 @@ fn shlex_split(s: &str) -> Result<Vec<String>, ShlexError> {
         }
     }
 
-    // Unmatched opening quote: error (Python raises ValueError)
+    // Unmatched opening quote: error (legacy raises ValueError)
     if let Some(opening) = quote_type {
         return Err(ShlexError { quote_char: opening });
     }
@@ -259,9 +259,9 @@ fn shlex_split(s: &str) -> Result<Vec<String>, ShlexError> {
     Ok(tokens)
 }
 
-/// Format a float to match Python ``str(float)`` behavior.
+/// Format a float to match legacy ``str(float)`` behavior.
 ///
-/// Python always includes a decimal point (e.g., ``str(0.0)`` → ``"0.0"``),
+/// The legacy format always includes a decimal point (e.g., ``str(0.0)`` → ``"0.0"``),
 /// while Rust's ``f64::to_string()`` omits it for whole numbers (``0.0`` → ``"0"``).
 fn float_to_py_string(f: f64) -> String {
     if f.is_infinite() || f.is_nan() {
@@ -385,7 +385,7 @@ mod tests {
         }
     }
 
-    /// Acceptance: build_command produces the same argument list as Python.
+    /// Acceptance: build_command produces the expected legacy argument list.
     #[test]
     fn test_build_command_basic() {
         let exe = Path::new("/usr/bin/llama-server");
@@ -508,9 +508,9 @@ mod tests {
         //  and the favorites are only deduplicated when enable_mtp=true)
         // Actually wait — the dedup only skips when enable_mtp is true.
         // When enable_mtp is false, the favorites ARE processed normally.
-        // Let me re-read the Python code...
+        // Re-check legacy behavior...
         //
-        // The Python code says:
+        // Legacy behavior:
         //   if profile.enable_mtp and ckey in ("--spec-type", "--spec-draft-n-max"):
         //       continue
         // So when enable_mtp=false, the check is false and the favorites ARE processed.
@@ -661,7 +661,7 @@ mod tests {
 
         let cmd = build_command(exe, &profile, &options).unwrap();
 
-        // Python shlex.split(posix=False) PRESERVES quotes in output
+        // shlex.split(posix=False) preserves quotes in output
         assert_eq!(cmd[cmd.len() - 2], "--prompt");
         assert_eq!(cmd[cmd.len() - 1], r#""Hello, World!""#);
     }
@@ -678,9 +678,9 @@ mod tests {
     /// Acceptance: shlex_split preserves quotes in output (posix=False parity).
     #[test]
     fn test_shlex_split_quoted() {
-        // Python: shlex.split('"hello world"', posix=False) => ['"hello world"']
+        // Example: shlex.split('"hello world"', posix=False) => ['"hello world"']
         assert_eq!(shlex_split(r#""hello world""#).unwrap(), vec![r#""hello world""#]);
-        // Python: shlex.split('a "b c" d', posix=False) => ['a', '"b c"', 'd']
+        // Example: shlex.split('a "b c" d', posix=False) => ['a', '"b c"', 'd']
         assert_eq!(
             shlex_split(r#"a "b c" d"#).unwrap(),
             vec!["a", r#""b c""#, "d"]
@@ -719,7 +719,7 @@ mod tests {
     /// Acceptance: shlex_split handles single quotes as grouping chars (posix=False).
     #[test]
     fn test_shlex_split_single_quotes_grouping() {
-        // Python: shlex.split("'hello world'", posix=False) => ["'hello world'"]
+        // Example: shlex.split("'hello world'", posix=False) => ["'hello world'"]
         assert_eq!(
             shlex_split("'hello world'").unwrap(),
             vec!["'hello world'"]
@@ -753,7 +753,7 @@ mod tests {
     /// Acceptance: shlex_split mixed quoted and unquoted tokens.
     #[test]
     fn test_shlex_split_mixed() {
-        // Python: shlex.split('a "b c" d "e f"', posix=False)
+        // Example: shlex.split('a "b c" d "e f"', posix=False)
         assert_eq!(
             shlex_split(r#"a "b c" d "e f""#).unwrap(),
             vec!["a", r#""b c""#, "d", r#""e f""#]
@@ -768,14 +768,14 @@ mod tests {
     /// Acceptance: shlex_split quote at non-first position is regular char (parity).
     #[test]
     fn test_shlex_split_mid_token_quote_is_regular() {
-        // Python: shlex.split('"a"b"c"', posix=False) => ['"a"', 'b"c"']
+        // Example: shlex.split('"a"b"c"', posix=False) => ['"a"', 'b"c"']
         // The " after b is NOT at token start, so it's a regular char
         assert_eq!(
             shlex_split(r#""a"b"c""#).unwrap(),
             vec![r#""a""#, r#"b"c""#]
         );
         // Quote-only token followed by unquoted text
-        // Python: shlex.split('"a""b"', posix=False) => ['"a"', '"b"']
+        // Example: shlex.split('"a""b"', posix=False) => ['"a"', '"b"']
         assert_eq!(
             shlex_split(r#""a""b""#).unwrap(),
             vec![r#""a""#, r#""b""#]
@@ -786,20 +786,20 @@ mod tests {
     #[test]
     fn test_shlex_split_cross_type_quote_inside_group() {
         // Single quote inside double-quote group is a regular char
-        // Python: shlex.split('"it\'s"', posix=False) => ['"it\'s"']
+        // Example: shlex.split('"it\'s"', posix=False) => ['"it\'s"']
         assert_eq!(
             shlex_split(r#""it's""#).unwrap(),
             vec![r#""it's""#]
         );
         // Double quote inside single-quote group is a regular char
-        // Python: shlex.split("'he said \"hi\"'", posix=False) => [''he said "hi"'']
+        // Example: shlex.split("'he said \"hi\"'", posix=False) => [''he said "hi"'']
         assert_eq!(
             shlex_split(r#"'he said "hi"'"#).unwrap(),
             vec![r#"'he said "hi"'"#]
         );
     }
 
-    /// Acceptance: shlex_split returns Err on unmatched opening quote (Python ValueError).
+    /// Acceptance: shlex_split returns Err on unmatched opening quote (legacy ValueError).
     #[test]
     fn test_shlex_split_unmatched_quote() {
         // Unmatched double quote at start of token

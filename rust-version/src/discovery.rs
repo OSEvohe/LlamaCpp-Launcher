@@ -8,7 +8,7 @@ use std::path::Path;
 /// Recursively find ``.gguf`` files in *model_dirs*.
 ///
 /// Returns a sorted, deduplicated list of path strings (case-insensitive sort,
-/// matching Python ``sorted(set(models), key=str.lower)``).
+/// matching legacy ``sorted(set(models), key=str.lower)``).
 pub fn scan_gguf_models(model_dirs: &[String]) -> Vec<String> {
     let mut models: Vec<String> = Vec::new();
 
@@ -25,7 +25,7 @@ pub fn scan_gguf_models(model_dirs: &[String]) -> Vec<String> {
     models.sort();
     models.dedup();
 
-    // Case-insensitive sort (mirrors Python key=str.lower)
+    // Case-insensitive sort (mirrors legacy key=str.lower)
     models.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
 
     models

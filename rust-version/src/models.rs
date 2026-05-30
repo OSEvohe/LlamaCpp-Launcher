@@ -14,7 +14,7 @@ pub fn new_profile_uid() -> String {
     format!("p-{:x}{:x}", now_nanos, counter)
 }
 
-/// CLI option descriptor (mirrors Python ``LlamaOption`` dataclass).
+/// CLI option descriptor (mirrors legacy ``LlamaOption`` dataclass).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LlamaOption {
     #[serde(default)]
@@ -35,10 +35,10 @@ pub struct LlamaOption {
 
 // ---------------------------------------------------------------------------
 // GlobalSettings — custom Deserialize so missing JSON keys are filled from
-// the struct-level Default (identical to Python GlobalSettings(**data)).
+// the struct-level Default (identical to legacy GlobalSettings(**data)).
 // ---------------------------------------------------------------------------
 
-/// Global launcher settings (mirrors Python ``GlobalSettings`` dataclass).
+/// Global launcher settings (mirrors legacy ``GlobalSettings`` dataclass).
 #[derive(Serialize, Debug, Clone)]
 pub struct GlobalSettings {
     pub llama_server_path: String,
@@ -87,13 +87,13 @@ impl<'de> Deserialize<'de> for GlobalSettings {
 
 // ---------------------------------------------------------------------------
 // Profile — custom Deserialize so missing JSON keys are filled from the
-// struct-level Default (identical to Python Profile(**item)).
+// struct-level Default (identical to legacy Profile(**item)).
 // ---------------------------------------------------------------------------
 
-/// Named profile for launching llama-server (mirrors Python ``Profile`` dataclass).
+/// Named profile for launching llama-server (mirrors legacy ``Profile`` dataclass).
 ///
 /// Deserialization starts from ``Profile::default()`` and patches only the
-/// keys present in the JSON — matching Python ``Profile(**item)`` behaviour
+/// keys present in the JSON — matching legacy ``Profile(**item)`` behaviour
 /// where dataclass defaults fill any absent keys.
 #[derive(Serialize, Debug, Clone)]
 pub struct Profile {

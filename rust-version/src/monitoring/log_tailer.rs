@@ -1,11 +1,11 @@
 //! Log tailing with marker-based rewrite detection.
 //!
-//! Mirrors Python ``tail_f``: reads new content appended to a log file,
+//! Mirrors legacy ``tail_f``: reads new content appended to a log file,
 //! detects truncations and equal-size rewrites using a trailing marker.
 
 use std::path::Path;
 
-/// Marker length in bytes for rewrite detection (mirrors Python ``_MARKER_LEN = 64``).
+/// Marker length in bytes for rewrite detection (mirrors legacy ``_MARKER_LEN = 64``).
 const MARKER_LEN: usize = 64;
 
 /// Cursor state for incremental log tailing.
@@ -53,7 +53,7 @@ pub fn tail_log_chunk(
     last_size: usize,
     prev_marker: &str,
 ) -> (String, usize, bool, String) {
-    // Read raw bytes then decode with lossy replacement, matching Python's
+    // Read raw bytes then decode with lossy replacement, matching legacy behavior
     // ``read_text(encoding="utf-8", errors="replace")`` — invalid UTF-8 bytes
     // become ``\u{FFFD}`` instead of aborting with an empty fallback.
     let raw = match std::fs::read(path) {
@@ -351,7 +351,7 @@ mod tests {
         assert!(!reset);
     }
 
-    // ---- Finding 1: tail_log_chunk tolerates non-UTF8 like Python errors='replace' ----
+    // ---- Finding 1: tail_log_chunk tolerates non-UTF8 like legacy errors='replace' ----
 
     #[test]
     fn test_tail_log_chunk_non_utf8_lossy() {
@@ -359,7 +359,7 @@ mod tests {
         let log_path = tmp.path().join("test.log");
 
         // Write valid UTF-8 prefix + invalid UTF-8 bytes (0xFF 0xFE are invalid alone)
-        // + valid UTF-8 suffix.  Python's errors='replace' turns each bad byte into
+        // + valid UTF-8 suffix. errors='replace' turns each bad byte into
         // the Unicode replacement character \u{FFFD}.
         let raw: Vec<u8> = b"hello ".to_vec()
             .into_iter()

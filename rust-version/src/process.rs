@@ -69,7 +69,7 @@ pub fn is_process_running(pid: i32) -> bool {
 /// Launch *cmd* as a detached subprocess, writing stdout to *stdout_path*.
 ///
 /// Uses ``CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`` (0x08000000 | 0x00000200)
-/// to detach the child from the parent job, matching Python's ``creationflags``.
+/// to detach the child from the parent job, matching legacy ``creationflags`` behavior.
 ///
 /// Returns the child PID on success, or 0 on failure.
 pub fn start_server(cmd: &[String], stdout_path: &Path, cwd: &Path) -> i32 {
@@ -91,7 +91,7 @@ pub fn start_server(cmd: &[String], stdout_path: &Path, cwd: &Path) -> i32 {
         }
     };
 
-    // Open NUL device for stdin, matching Python's stdin=subprocess.DEVNULL.
+    // Open NUL device for stdin, matching legacy stdin=DEVNULL behavior.
     let nul_wide: Vec<u16> = "NUL\0".encode_utf16().collect();
     let nul_handle: HANDLE = unsafe {
         CreateFileW(
@@ -326,7 +326,7 @@ fn escape_for_cmdline(s: &str) -> String {
 /// Open a file handle for writing (truncated), suitable for use as a child
 /// process stdout. Returns a raw WinAPI HANDLE.
 fn open_stdout_handle(path: &Path) -> Result<HANDLE, std::io::Error> {
-    // Truncate the file first (matching Python's open("w")).
+    // Truncate the file first (matching legacy open("w") behavior).
     std::fs::write(path, "")?;
     let file = std::fs::OpenOptions::new()
         .write(true)

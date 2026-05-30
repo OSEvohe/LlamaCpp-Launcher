@@ -16,10 +16,10 @@ use crate::options::{load_options_from_exe, resolve_llama_server_path};
 use crate::process::{self, read_pid, write_pid};
 
 // ---------------------------------------------------------------------------
-// Coercion helpers (mirror Python _coerce_int / _coerce_float / _coerce_bool)
+// Coercion helpers mirroring legacy behavior
 // ---------------------------------------------------------------------------
 
-/// Coerce a JSON value to ``i64``. Booleans are **rejected** (Python parity).
+/// Coerce a JSON value to ``i64``. Booleans are **rejected** (legacy parity).
 fn coerce_int(val: &serde_json::Value, field: &str) -> Result<i64, String> {
     match val {
         serde_json::Value::Bool(_) => Err(format!("{} must be an integer", field)),
@@ -35,7 +35,7 @@ fn coerce_int(val: &serde_json::Value, field: &str) -> Result<i64, String> {
     }
 }
 
-/// Coerce a JSON value to ``f64``. Booleans are **rejected** (Python parity).
+/// Coerce a JSON value to ``f64``. Booleans are **rejected** (legacy parity).
 fn coerce_float(val: &serde_json::Value, field: &str) -> Result<f64, String> {
     match val {
         serde_json::Value::Bool(_) => Err(format!("{} must be a number", field)),
@@ -104,7 +104,7 @@ impl Default for State {
 /// Facade encapsulating all core LLama Launcher operations.
 ///
 /// Thread-safe: all read-modify-write paths are guarded by an internal
-/// ``RwLock`` (mirrors Python ``threading.RLock``).
+/// ``RwLock`` (mirrors legacy ``threading.RLock`` behavior).
 pub struct LlamaLauncherService {
     /// Application root directory.
     app_dir: PathBuf,
@@ -383,7 +383,7 @@ impl LlamaLauncherService {
     ///
     /// *profile_data* is a map of field names to ``serde_json::Value``.
     /// Coercion is applied to ``top_k``, ``min_p``, ``presence_penalty``,
-    /// ``np``, ``enable_mtp``, and ``spec_draft_n_max`` (Python parity).
+    /// ``np``, ``enable_mtp``, and ``spec_draft_n_max`` (legacy parity).
     pub fn update_profile(
         &self,
         index: i64,
@@ -397,7 +397,7 @@ impl LlamaLauncherService {
         }
         let existing = &profiles[idx];
 
-        // Coerced fields (Python parity)
+        // Coerced fields (legacy parity)
         let top_k = if let Some(v) = profile_data.get("top_k") {
             coerce_int(v, "top_k")?
         } else {
@@ -1036,7 +1036,7 @@ mod tests {
         assert!(svc.update_profile(99, &data).is_err());
     }
 
-    // ---- Acceptance: coercion matches Python behavior ----
+    // ---- Acceptance: coercion matches legacy behavior ----
 
     #[test]
     fn test_coerce_int_rejects_bool() {

@@ -1,7 +1,7 @@
 //! Persistence helpers mirroring ``llama_launcher/config.py``.
 //!
 //! Reads and writes ``.launcher/global.json`` and ``.launcher/profiles.json``
-//! with identical schema to the Python implementation.
+//! with identical schema to the legacy implementation.
 
 use std::path::{Path, PathBuf};
 
@@ -92,7 +92,7 @@ fn ensure_state() {
 }
 
 // ---------------------------------------------------------------------------
-// Safe type helpers (mirror Python _safe_int / _safe_str / _safe_bool)
+// Safe type helpers mirroring legacy coercion behavior
 // ---------------------------------------------------------------------------
 
 /// Coerce a JSON value to ``i64``, returning *default* for non-integer or bool.
@@ -121,7 +121,7 @@ fn safe_bool(val: &serde_json::Value, default: bool) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Legacy MTP migration (mirrors Python ``_normalize_mtp``)
+// Legacy MTP migration behavior
 // ---------------------------------------------------------------------------
 
 pub fn normalize_mtp(item: &mut serde_json::Map<String, serde_json::Value>) {
@@ -481,7 +481,7 @@ mod tests {
         let gs = GlobalSettings::default();
         let json = serde_json::to_string_pretty(&gs).expect("serialize");
 
-        // Expected Python output:
+        // Expected legacy output:
         // {
         //   "llama_server_path": "",
         //   "model_dirs": [],
@@ -749,7 +749,7 @@ mod tests {
 
     // ---- Acceptance: Partial Profile deserialization fills defaults ----
     // Regression: serde_json::from_value without #[serde(default)] drops
-    // entries when fields are missing. Python Profile(**item) fills defaults.
+    // entries when fields are missing; defaults are filled.
 
     #[test]
     fn test_partial_profile_deserialization() {
@@ -761,7 +761,7 @@ mod tests {
         // Provided field
         assert_eq!(profile.name, "minimal");
 
-        // All defaults filled (matching Python Profile dataclass)
+        // All defaults filled (matching profile defaults)
         assert_eq!(profile.model_path, "");
         assert_eq!(profile.host, "127.0.0.1");
         assert_eq!(profile.port, 8080);
@@ -813,7 +813,7 @@ mod tests {
     }
 
     // ---- Acceptance: model_dirs non-string entries are silently skipped ----
-    // Mirrors Python: data.get("model_dirs", []) returns whatever JSON holds;
+    // Mirrors legacy behavior: data.get("model_dirs", []) returns whatever JSON holds;
     // Rust filter_map drops non-string entries, matching the safe intent.
 
     #[test]
