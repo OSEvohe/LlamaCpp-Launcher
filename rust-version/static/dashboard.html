@@ -85,10 +85,17 @@ tr:hover td{background:#161b22}
 .profile-list li{padding:8px 12px;border:1px solid #30363d;border-radius:4px;margin-bottom:6px;
   cursor:pointer;display:flex;justify-content:space-between;align-items:center;transition:border-color .15s}
 .profile-list li:hover,.profile-list li.selected{border-color:#58a6ff;background:#161b22}
+.profile-list li .profile-main{display:flex;align-items:center;gap:8px;min-width:0;flex:1}
+.profile-list li .profile-text{min-width:0}
 .profile-list li .pname{font-weight:600;color:#f0f6fc}
 .profile-list li .pmodel{font-size:12px;color:#8b949e}
 .profile-list li .active-badge{display:inline-block;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:700;
   background:#238636;color:#fff;margin-left:6px;letter-spacing:.3px}
+.profile-list li .running-badge{display:inline-block;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:700;
+  background:#1f6feb;color:#fff;margin-left:6px;letter-spacing:.3px}
+.profile-list li .autostart-badge{display:inline-block;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:700;
+  background:#8957e5;color:#fff;margin-left:6px;letter-spacing:.3px}
+.profile-list li .row-action{padding:2px 8px;min-width:32px;justify-content:center}
 
 /* ---- misc ---- */
 .mt-8{margin-top:8px}
@@ -366,8 +373,32 @@ function show(el, msg, isError) {
 
 // ---- state ----
 let selectedProfileIdx = 0;
+let selectedProfileUid = '';
 let _modelPathReqId = 0;
 let _modelPathLoading = false;
+let _runningProfileIdx = -1;
+
+function resolveRunningProfileIdx(profiles, loadedModelPath) {
+  if (!Array.isArray(profiles) || !profiles.length || !loadedModelPath) return -1;
+  const normLoaded = String(loadedModelPath).replace(/\\/g, '/').toLowerCase();
+  const exactIdx = profiles.findIndex(p => {
+    const modelPath = String((p && p.model_path) || '');
+    if (!modelPath) return false;
+    return modelPath.replace(/\\/g, '/').toLowerCase() === normLoaded;
+  });
+  if (exactIdx >= 0) return exactIdx;
+
+  const loadedBase = normLoaded.split('/').pop();
+  if (!loadedBase) return -1;
+  const basenameMatches = [];
+  profiles.forEach((p, i) => {
+    const modelPath = String((p && p.model_path) || '');
+    if (!modelPath) return;
+    const base = modelPath.replace(/\\/g, '/').toLowerCase().split('/').pop();
+    if (base === loadedBase) basenameMatches.push(i);
+  });
+  return basenameMatches.length === 1 ? basenameMatches[0] : -1;
+}
 
 // ---- tabs ----
 $$('.tab-btn').forEach(btn => {
@@ -453,16 +484,9 @@ async function syncLoadedModel() {
     }
     el.innerHTML = `Model: <span class="model-path" title="${esc(path)}">${esc(path)}</span>`;
     if (!_profilesCache.length) return;
-    const normBase = String(path).replace(/\\/g, '/').split('/').pop().toLowerCase();
-    const idx = _profilesCache.findIndex(p => {
-      const modelPath = String((p && p.model_path) || '');
-      if (!modelPath) return false;
-      if (modelPath === path) return true;
-      const modelBase = modelPath.replace(/\\/g, '/').split('/').pop().toLowerCase();
-      return modelBase && modelBase === normBase;
-    });
-    if (idx >= 0 && idx !== selectedProfileIdx) {
-      selectedProfileIdx = idx;
+    const idx = resolveRunningProfileIdx(_profilesCache, path);
+    if (idx !== _runningProfileIdx) {
+      _runningProfileIdx = idx;
       fetchProfiles();
     }
   } catch (_e) { /* silent: model may not be loaded yet */ }
@@ -498,6 +522,7 @@ async function doLaunch() {
   headerResult('', false);
   try {
     const body = {
+      profile_uid: selectedProfileUid || undefined,
       profile_index: selectedProfileIdx,
       exe_path: undefined
     };
@@ -523,10 +548,17 @@ async function doStop() {
 }
 
 async function doRestart() {
+  await doRestartProfile(selectedProfileIdx);
+}
+
+async function doRestartProfile(profileIdx) {
   headerResult('', false);
   try {
+    selectedProfileIdx = profileIdx;
+    selectedProfileUid = (_profilesCache[profileIdx] && _profilesCache[profileIdx].uid) || '';
     const body = {
-      profile_index: selectedProfileIdx,
+      profile_uid: selectedProfileUid || undefined,
+      profile_index: profileIdx,
       exe_path: undefined
     };
     const d = await api('/api/restart', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
@@ -538,26 +570,72 @@ async function doRestart() {
   } catch (e) { headerResult(e.message, true); }
 }
 
+async function doStopProfile(profileIdx) {
+  if (profileIdx !== _runningProfileIdx) return;
+  await doStop();
+}
+
 // ---- profiles ----
 let _profilesCache = [];
+
+function profileRefFor(i) {
+  const p = _profilesCache[i];
+  return (p && p.uid) ? encodeURIComponent(p.uid) : String(i);
+}
+
+function resolveProfileIndexByUid(uid) {
+  if (!uid) return -1;
+  return _profilesCache.findIndex(p => p && p.uid === uid);
+}
 
 async function fetchProfiles() {
   try {
     _profilesCache = await api('/api/profiles');
     if (_profilesCache.length === 0) {
       selectedProfileIdx = 0;
+      selectedProfileUid = '';
     } else {
-      selectedProfileIdx = Math.min(selectedProfileIdx, _profilesCache.length - 1);
+      const uidIdx = resolveProfileIndexByUid(selectedProfileUid);
+      if (uidIdx >= 0) {
+        selectedProfileIdx = uidIdx;
+      } else {
+        selectedProfileIdx = Math.min(selectedProfileIdx, _profilesCache.length - 1);
+      }
+      selectedProfileUid = (_profilesCache[selectedProfileIdx] && _profilesCache[selectedProfileIdx].uid) || '';
     }
+    _runningProfileIdx = -1;
+    try {
+      const status = await api('/api/status');
+      if (status && status.running) {
+        const perf = await api('/api/perf');
+        const path = perf && perf.loaded_model_path;
+        _runningProfileIdx = resolveRunningProfileIdx(_profilesCache, path);
+      }
+    } catch (_e) { /* silent: status/perf may be temporarily unavailable */ }
     const ul = $('#profileList');
     ul.innerHTML = '';
     _profilesCache.forEach((p, i) => {
       const li = document.createElement('li');
       const isActive = (i === selectedProfileIdx);
-      const badge = isActive ? '<span class="active-badge">&#9654; active</span>' : '';
-      li.innerHTML = `<span><span class="pname">${esc(p.name)}</span>${badge} <span class="pmodel">${esc(p.model_path || 'no model')}</span></span>
+      const isRunning = (i === _runningProfileIdx);
+      const isAutostart = !!p.start_on_boot;
+      const badges = [
+        isActive ? '<span class="active-badge">&#9654; active</span>' : '',
+        isRunning ? '<span class="running-badge">running</span>' : '',
+        isAutostart ? '<span class="autostart-badge">autostart</span>' : ''
+      ].join('');
+      li.innerHTML = `<span class="profile-main"><button class="btn small row-action" type="button" data-row-action="${isRunning ? 'stop' : 'play'}">${isRunning ? '&#9632;' : '&#9654;'}</button><span class="profile-text"><span class="pname">${esc(p.name)}</span>${badges} <span class="pmodel">${esc(p.model_path || 'no model')}</span></span></span>
         <span class="text-sm">${i}</span>`;
-      li.addEventListener('click', () => { selectedProfileIdx = i; openProfileEditor(i); fetchProfiles(); });
+      const actionBtn = li.querySelector('[data-row-action]');
+      actionBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (isRunning) {
+          doStopProfile(i);
+        } else {
+          doRestartProfile(i);
+        }
+      });
+      li.addEventListener('click', () => { selectedProfileIdx = i; selectedProfileUid = (p && p.uid) || ''; openProfileEditor(i); fetchProfiles(); });
       ul.appendChild(li);
     });
   } catch (e) {
@@ -569,6 +647,7 @@ async function openProfileEditor(index) {
   const reqId = ++_modelPathReqId;
   const p = _profilesCache[index];
   if (!p) return;
+  selectedProfileUid = p.uid || '';
   $('#profileEditor').style.display = 'block';
   $('#peIndex').value = index;
   $('#peName').value = p.name || '';
@@ -690,10 +769,11 @@ async function doSaveProfile() {
     if (cachedProfile.advanced_values) body.advanced_values = cachedProfile.advanced_values;
   }
   try {
-    const updated = await api(`/api/profiles/${index}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const updated = await api(`/api/profiles/${profileRefFor(index)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     show(el, 'Profile saved', false);
     fetchProfiles();
     _profilesCache[index] = updated;
+    selectedProfileUid = updated.uid || selectedProfileUid;
     syncAdvProfileIdx(index);
   } catch (e) { show(el, e.message, true); }
 }
@@ -702,7 +782,7 @@ async function doDeleteProfile() {
   const index = parseInt($('#peIndex').value, 10);
   if (!confirm(`Delete profile #${index}?`)) return;
   try {
-    await api(`/api/profiles/${index}`, { method: 'DELETE' });
+    await api(`/api/profiles/${profileRefFor(index)}`, { method: 'DELETE' });
     $('#profileEditor').style.display = 'none';
     fetchProfiles();
     syncAdvProfileIdx();
@@ -722,7 +802,7 @@ async function doAddProfile() {
 async function doDuplicateProfile() {
   const index = parseInt($('#peIndex').value, 10);
   try {
-    await api(`/api/profiles/${index}/duplicate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+    await api(`/api/profiles/${profileRefFor(index)}/duplicate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
     fetchProfiles();
     syncAdvProfileIdx();
   } catch (e) { show($('#peResult'), e.message, true); }
@@ -897,6 +977,7 @@ async function initAdvancedTab() {
 function refreshAdvProfileIdx() {
   const sel = $('#advProfileIdx');
   const val = sel.value;
+  const prevUid = (val !== '') ? ((_profilesCache[parseInt(val, 10)] || {}).uid || '') : '';
   return api('/api/profiles').then(profiles => {
     _profilesCache = profiles;
     sel.innerHTML = '';
@@ -906,7 +987,12 @@ function refreshAdvProfileIdx() {
       opt.textContent = `${i}: ${p.name || 'unnamed'}`;
       sel.appendChild(opt);
     });
-    if (sel.querySelector(`option[value="${val}"]`)) sel.value = val;
+    const nextIdxByUid = profiles.findIndex(p => p && p.uid === prevUid);
+    if (nextIdxByUid >= 0) {
+      sel.value = String(nextIdxByUid);
+    } else if (sel.querySelector(`option[value="${val}"]`)) {
+      sel.value = val;
+    }
     loadAdvProfile();
     renderAdvOptionsList();
     renderAdvFavorites();
@@ -1138,7 +1224,7 @@ async function doSaveAdvFavorites() {
   };
 
   try {
-    const updated = await api(`/api/profiles/${index}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const updated = await api(`/api/profiles/${profileRefFor(index)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     _profilesCache[index] = updated;
     // reload local draft from persisted values
     _advFavorites = updated.advanced_favorites || [];
