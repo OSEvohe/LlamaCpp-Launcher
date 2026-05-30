@@ -3,9 +3,8 @@
 ## Active Plans
 
 ### 🦀 Rust Migration (in progress)
-Rewrite the Python application as a fully native Rust binary under `rust-version/`.
+Consolidate LLama Launcher as a native Rust binary under `rust-version/`.
 7 phases: scaffolding → core logic → process/monitoring → HTTP API → CLI/auto-start → dashboard → testing & cutover.
-Python remains source of truth until Rust achieves full behavioral parity.
 
 **Details:** [`rust-migration.md`](rust-migration.md)
 - **Implementation stories (13 stories):** [`rust-migration-stories.md`](rust-migration-stories.md)

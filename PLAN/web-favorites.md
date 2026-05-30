@@ -69,7 +69,7 @@ complet — le travail se concentre sur le frontend HTML/JS et quelques tests.
 ### 8. Test de regression global (S)
 - **Objectif** : S'assurer que les tests existants passent toujours et que
   le dashboard reste fonctionnel.
-- **Livrable** : Exécution `python -m pytest tests/` + vérification visuelle.
+- **Livrable** : Exécution `cargo test --manifest-path rust-version/Cargo.toml` + vérification visuelle.
 - **Taille** : S
 
 ---
@@ -88,7 +88,7 @@ complet — le travail se concentre sur le frontend HTML/JS et quelques tests.
 
 ## Validation
 
-- **Tests unitaires** : `python -m pytest tests/test_api_endpoints.py`
+- **Tests unitaires** : `cargo test --manifest-path rust-version/Cargo.toml --test api_endpoints`
 - **Validation manuelle** :
   1. Ouvrir dashboard → onglet Advanced → cocher un favori → sauvegarder profil.
   2. Recharger la page → vérifier que le favori persiste.
