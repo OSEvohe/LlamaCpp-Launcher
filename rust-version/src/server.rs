@@ -385,7 +385,21 @@ fn resolve_profile_index(profiles: &[Profile], profile_ref: &str) -> Option<usiz
     if let Ok(index) = profile_ref.parse::<usize>() {
         return (index < profiles.len()).then_some(index);
     }
-    None
+    let mut match_index = None;
+    let mut match_count = 0usize;
+
+    for (idx, profile) in profiles.iter().enumerate() {
+        if profile.name.eq_ignore_ascii_case(profile_ref) {
+            match_count += 1;
+            if match_count == 1 {
+                match_index = Some(idx);
+            } else {
+                return None;
+            }
+        }
+    }
+
+    match_index
 }
 
 async fn get_settings(State(state): State<SharedState>) -> Json<GlobalSettings> {
