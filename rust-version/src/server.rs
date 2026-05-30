@@ -846,11 +846,12 @@ mod tests {
             .trim()
             .to_string();
 
-        svc.save_global(GlobalSettings {
+      svc.save_global(GlobalSettings {
             llama_server_path: exe_path.clone(),
             model_dirs: Vec::new(),
             api_host: "127.0.0.1".into(),
             api_port: 0,
+            ..GlobalSettings::default()
         });
 
         let p0 = Profile {

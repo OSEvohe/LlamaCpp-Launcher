@@ -2,6 +2,13 @@
 
 ## Active Plans
 
+### 🗂️ llama.cpp Version Management
+Manage launcher-owned llama.cpp versions: installed list, GitHub catalog, download/delete lifecycle, and active-version selection.
+
+- **Step 1:** [`llama-cpp-version-management/01-state-and-version-registry.md`](llama-cpp-version-management/01-state-and-version-registry.md)
+- **Step 2:** [`llama-cpp-version-management/02-github-catalog-and-install-lifecycle.md`](llama-cpp-version-management/02-github-catalog-and-install-lifecycle.md)
+- **Step 3:** [`llama-cpp-version-management/03-api-dashboard-and-tests.md`](llama-cpp-version-management/03-api-dashboard-and-tests.md)
+
 ### 🦀 Rust Migration (in progress)
 Consolidate LLama Launcher as a native Rust binary under `rust-version/`.
 7 phases: scaffolding → core logic → process/monitoring → HTTP API → CLI/auto-start → dashboard → testing & cutover.

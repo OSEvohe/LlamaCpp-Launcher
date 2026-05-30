@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use std::collections::HashSet;
 
-use crate::models::{new_profile_uid, GlobalSettings, Profile};
+use crate::models::{new_profile_uid, GlobalSettings, InstalledVersion, Profile};
 
 fn repo_app_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -297,11 +297,29 @@ pub fn load_global() -> GlobalSettings {
         _ => Vec::new(),
     };
 
+    let installed_versions: Vec<InstalledVersion> = data
+        .get("installed_versions")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| serde_json::from_value::<InstalledVersion>(v.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let active_version: Option<String> = data
+        .get("active_version")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
     GlobalSettings {
         llama_server_path: safe_str(data.get("llama_server_path").unwrap_or(&serde_json::Value::Null), ""),
         model_dirs,
         api_host: safe_str(data.get("api_host").unwrap_or(&serde_json::Value::Null), "127.0.0.1"),
         api_port: safe_int(data.get("api_port").unwrap_or(&serde_json::Value::Null), 0),
+        installed_versions,
+        active_version,
+        install_states: std::collections::HashMap::new(),
     }
 }
 
@@ -481,18 +499,20 @@ mod tests {
         let gs = GlobalSettings::default();
         let json = serde_json::to_string_pretty(&gs).expect("serialize");
 
-        // Expected legacy output:
+        // Expected output with new fields:
         // {
         //   "llama_server_path": "",
         //   "model_dirs": [],
         //   "api_host": "127.0.0.1",
-        //   "api_port": 0
+        //   "api_port": 0,
+        //   "installed_versions": []
         // }
         let expected = serde_json::json!({
             "llama_server_path": "",
             "model_dirs": [],
             "api_host": "127.0.0.1",
-            "api_port": 0
+            "api_port": 0,
+            "installed_versions": []
         });
         let actual: serde_json::Value = serde_json::from_str(&json).expect("parse");
         assert_eq!(actual, expected);
@@ -719,6 +739,7 @@ mod tests {
             model_dirs: vec!["C:\\models".into()],
             api_host: "192.168.1.1".into(),
             api_port: 7890,
+            ..GlobalSettings::default()
         };
 
         let json = serde_json::to_string_pretty(&original).expect("serialize");
@@ -739,6 +760,7 @@ mod tests {
             },
             api_host: safe_str(data.get("api_host").unwrap_or(&serde_json::Value::Null), "127.0.0.1"),
             api_port: safe_int(data.get("api_port").unwrap_or(&serde_json::Value::Null), 0),
+            ..GlobalSettings::default()
         };
 
         assert_eq!(original.llama_server_path, restored.llama_server_path);
@@ -864,5 +886,96 @@ mod tests {
             assert!(!p.uid.trim().is_empty());
             assert!(seen.insert(p.uid.clone()));
         }
+    }
+
+    // ---- Acceptance: backward compat — old global.json without new keys ----
+
+    #[test]
+    fn test_load_global_backward_compat_old_json() {
+        // Simulate parsing an old global.json that has no installed_versions or active_version.
+        let raw = serde_json::json!({
+            "llama_server_path": "C:\\old\\llama-server.exe",
+            "model_dirs": ["C:\\models"],
+            "api_host": "127.0.0.1",
+            "api_port": 7890
+        });
+        let gs: GlobalSettings =
+            serde_json::from_value(raw).expect("old global.json should deserialize");
+
+        assert_eq!(gs.llama_server_path, "C:\\old\\llama-server.exe");
+        assert_eq!(gs.model_dirs, vec!["C:\\models"]);
+        assert_eq!(gs.api_host, "127.0.0.1");
+        assert_eq!(gs.api_port, 7890);
+        assert!(gs.installed_versions.is_empty());
+        assert_eq!(gs.active_version, None);
+    }
+
+    #[test]
+    fn test_load_global_with_new_fields() {
+        use crate::models::VersionStatus;
+
+        let raw = serde_json::json!({
+            "llama_server_path": "C:\\old\\llama-server.exe",
+            "model_dirs": [],
+            "api_host": "127.0.0.1",
+            "api_port": 7890,
+            "installed_versions": [
+                {
+                    "tag": "b3594",
+                    "source": "github",
+                    "install_path": "C:\\versions\\b3594",
+                    "executable_path": "C:\\versions\\b3594\\llama-server.exe",
+                    "status": "installed",
+                    "installed_at": "2025-01-01T00:00:00Z"
+                }
+            ],
+            "active_version": "b3594"
+        });
+        let gs: GlobalSettings =
+            serde_json::from_value(raw).expect("new global.json should deserialize");
+
+        assert_eq!(gs.installed_versions.len(), 1);
+        assert_eq!(gs.installed_versions[0].tag, "b3594");
+        assert_eq!(gs.installed_versions[0].status, VersionStatus::Installed);
+        assert_eq!(gs.active_version, Some("b3594".into()));
+    }
+
+    #[test]
+    fn test_installed_version_roundtrip() {
+        use crate::models::{InstalledVersion, VersionStatus};
+
+        let ver = InstalledVersion {
+            tag: "b3594".into(),
+            source: "github".into(),
+            install_path: "C:\\versions\\b3594".into(),
+            executable_path: "C:\\versions\\b3594\\llama-server.exe".into(),
+            status: VersionStatus::Installed,
+            installed_at: Some("2025-01-01T00:00:00Z".into()),
+        };
+
+        let json = serde_json::to_string(&ver).expect("serialize");
+        let restored: InstalledVersion = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(restored.tag, "b3594");
+        assert_eq!(restored.source, "github");
+        assert_eq!(restored.status, VersionStatus::Installed);
+        assert_eq!(restored.installed_at, Some("2025-01-01T00:00:00Z".into()));
+    }
+
+    #[test]
+    fn test_installed_version_defaults() {
+        use crate::models::InstalledVersion;
+
+        // Minimal JSON — all optional fields use defaults.
+        let raw = serde_json::json!({
+            "tag": "b3594"
+        });
+        let ver: InstalledVersion = serde_json::from_value(raw).expect("deserialize");
+
+        assert_eq!(ver.tag, "b3594");
+        assert_eq!(ver.source, "");
+        assert_eq!(ver.install_path, "");
+        assert_eq!(ver.executable_path, "");
+        assert_eq!(ver.installed_at, None);
     }
 }

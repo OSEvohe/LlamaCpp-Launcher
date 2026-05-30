@@ -10,7 +10,7 @@ use std::sync::RwLock;
 use crate::command::{self, canonical_adv_key, favorite_string_value};
 use crate::config::{self, app_dir};
 use crate::discovery::scan_gguf_models;
-use crate::models::{GlobalSettings, LlamaOption, Profile};
+use crate::models::{GlobalSettings, InstalledVersion, LlamaOption, Profile};
 use crate::monitoring::{self, MonitoringService, PerfStats};
 use crate::options::{load_options_from_exe, resolve_llama_server_path};
 use crate::process::{self, read_pid, write_pid};
@@ -73,6 +73,52 @@ fn coerce_bool(val: &serde_json::Value, field: &str) -> Result<bool, String> {
 }
 
 // ---------------------------------------------------------------------------
+// Filesystem helpers (used by install/uninstall)
+// ---------------------------------------------------------------------------
+
+/// Recursively copy a directory tree.
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dst)
+        .map_err(|e| format!("Failed to create dir {:?}: {}", dst, e))?;
+    for entry in std::fs::read_dir(src)
+        .map_err(|e| format!("Failed to read dir {:?}: {}", src, e))?
+    {
+        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            copy_dir_all(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)
+                .map_err(|e| format!("Failed to copy {:?}: {}", src_path, e))?;
+        }
+    }
+    Ok(())
+}
+
+/// Recursively search *dir* for ``llama-server.exe``, returning the full path.
+fn find_exe_in_dir(dir: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries {
+        let entry = entry.ok()?;
+        if entry.file_name() == "llama-server.exe" {
+            return Some(entry.path());
+        }
+    }
+    // Check one level deep
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries {
+        let entry = entry.ok()?;
+        if entry.file_type().ok()?.is_dir() {
+            if let Some(found) = find_exe_in_dir(&entry.path()) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // Internal state (guarded by RwLock)
 // ---------------------------------------------------------------------------
 
@@ -126,6 +172,8 @@ pub struct LlamaLauncherService {
     state: RwLock<State>,
     /// Monitoring service (owns log cursor and perf stats).
     monitoring: RwLock<MonitoringService>,
+    /// Directory where versioned llama.cpp installs live (``.launcher/versions/``).
+    versions_dir: PathBuf,
 }
 
 impl LlamaLauncherService {
@@ -153,12 +201,13 @@ impl LlamaLauncherService {
             monitoring: RwLock::new(MonitoringService::new(
                 given.join(".launcher").join("llama-server.log"),
             )),
+            versions_dir: given.join(".launcher").join("versions"),
         }
     }
 
     // -- internal helpers (operate on lock guard) ---------------------------
 
-    fn ensure_state(&self) {
+    pub fn ensure_state(&self) {
         std::fs::create_dir_all(&self.state_dir).ok();
     }
 
@@ -602,9 +651,407 @@ impl LlamaLauncherService {
                 .get("api_port")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(current.api_port),
+            installed_versions: settings_data
+                .get("installed_versions")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| serde_json::from_value::<InstalledVersion>(v.clone()).ok())
+                        .collect()
+                })
+                .unwrap_or(current.installed_versions),
+            active_version: settings_data
+                .get("active_version")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .or(current.active_version),
+            install_states: current.install_states,
         };
         self.save_global_internal(&settings);
         settings
+    }
+
+    // -- version management -------------------------------------------------
+
+    /// Return the list of installed llama.cpp versions.
+    pub fn list_installed_versions(&self) -> Vec<InstalledVersion> {
+        let _guard = self.state.read().expect("lock poisoned");
+        self.load_global_internal().installed_versions
+    }
+
+    /// Register or update an installed version entry.
+    pub fn register_installed_version(&self, version: InstalledVersion) {
+        let _guard = self.state.write().expect("lock poisoned");
+        let mut gs = self.load_global_internal();
+        let tag = version.tag.clone();
+        let exists = gs.installed_versions.iter().any(|v| v.tag == tag);
+        if exists {
+            // Update existing entry.
+            for v in gs.installed_versions.iter_mut() {
+                if v.tag == tag {
+                    *v = version;
+                    break;
+                }
+            }
+        } else {
+            gs.installed_versions.push(version);
+        }
+        self.save_global_internal(&gs);
+    }
+
+    /// Remove an installed version entry by tag.
+    /// Returns ``true`` if the version was found and removed.
+    pub fn unregister_installed_version(&self, tag: &str) -> bool {
+        let _guard = self.state.write().expect("lock poisoned");
+        let mut gs = self.load_global_internal();
+        let before = gs.installed_versions.len();
+        gs.installed_versions.retain(|v| v.tag != tag);
+        let removed = gs.installed_versions.len() < before;
+        // If the removed version was active, clear active_version.
+        if removed && gs.active_version.as_deref() == Some(tag) {
+            gs.active_version = None;
+        }
+        self.save_global_internal(&gs);
+        removed
+    }
+
+    /// Set the active version by tag.
+    ///
+    /// Returns an error if the tag is not found in the installed versions list.
+    pub fn set_active_version(&self, tag: &str) -> Result<(), String> {
+        let _guard = self.state.write().expect("lock poisoned");
+        let mut gs = self.load_global_internal();
+        let found = gs.installed_versions.iter().any(|v| v.tag == tag);
+        if !found {
+            return Err(format!("version '{}' is not in the installed versions list", tag));
+        }
+        gs.active_version = Some(tag.to_string());
+        self.save_global_internal(&gs);
+        Ok(())
+    }
+
+    /// Resolve the executable path for the active version.
+    ///
+    /// Resolution order:
+    /// 1. If ``active_version`` is set, look up the matching installed version.
+    ///    - If the executable path exists on disk, return it.
+    ///    - If the executable is missing, return an error with ``stale`` status.
+    /// 2. Fall back to ``llama_server_path`` if set.
+    /// 3. Return error if no executable is available.
+    pub fn resolve_active_executable(&self) -> Result<String, String> {
+        let _guard = self.state.read().expect("lock poisoned");
+        let gs = self.load_global_internal();
+
+        // 1. Try active_version first.
+        if let Some(ref tag) = gs.active_version {
+            if let Some(ver) = gs.installed_versions.iter().find(|v| v.tag == *tag) {
+                let exe_path = &ver.executable_path;
+                if !exe_path.is_empty() && Path::new(exe_path).exists() {
+                    return Ok(exe_path.clone());
+                }
+                // Executable missing — stale.
+                return Err(format!(
+                    "active version '{}' is stale: executable not found at '{}'",
+                    tag, exe_path
+                ));
+            }
+        }
+
+        // 2. Fallback to llama_server_path.
+        if !gs.llama_server_path.is_empty() && Path::new(&gs.llama_server_path).exists() {
+            return Ok(gs.llama_server_path.clone());
+        }
+        if !gs.llama_server_path.is_empty() {
+            return Err(format!(
+                "fallback llama_server_path not found: '{}'",
+                gs.llama_server_path
+            ));
+        }
+
+        // 3. Nothing available.
+        Err("no active version set and llama_server_path is empty".to_string())
+    }
+
+    // -- version install / uninstall ----------------------------------------
+
+    /// Fetch available llama.cpp releases from GitHub.
+    pub async fn fetch_available_versions(&self) -> Result<Vec<crate::models::GitHubRelease>, String> {
+        crate::versions::fetch_releases()
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Get the current install state for a version tag, if any.
+    pub fn get_install_state(&self, tag: &str) -> Option<crate::models::InstallState> {
+        let _guard = self.state.read().expect("lock poisoned");
+        let gs = self.load_global_internal();
+        gs.install_states.get(tag).cloned()
+    }
+
+    /// Start installing a version from a GitHub release asset.
+    ///
+    /// This method validates preconditions, updates the install state to
+    /// ``downloading``, and spawns an async task that performs the actual
+    /// download, extraction, and registration.
+    pub async fn start_install_version(
+        &self,
+        tag: &str,
+        asset: &crate::models::GitHubReleaseAsset,
+    ) -> Result<(), String> {
+        let tag = tag.to_string();
+        let url = asset.download_url.clone();
+        let asset_name = asset.name.clone();
+        let size_bytes = asset.size_bytes;
+
+        // Validate preconditions (hold lock briefly)
+        {
+            let _guard = self.state.write().expect("lock poisoned");
+            let mut gs = self.load_global_internal();
+
+            // Already installed?
+            if gs.installed_versions.iter().any(|v| v.tag == tag) {
+                return Err(format!("version '{}' is already installed", tag));
+            }
+
+            // Already installing?
+            if let Some(state) = gs.install_states.get(&tag) {
+                if state.phase != crate::models::InstallPhase::Idle
+                    && state.phase != crate::models::InstallPhase::Error
+                {
+                    return Err(format!("install for '{}' is already in progress", tag));
+                }
+            }
+
+            // Set state to downloading
+            gs.install_states.insert(
+                tag.clone(),
+                crate::models::InstallState {
+                    phase: crate::models::InstallPhase::Downloading,
+                    downloaded_bytes: 0,
+                    total_bytes: size_bytes,
+                    error: String::new(),
+                },
+            );
+            self.save_global_internal(&gs);
+        }
+
+        // Spawn async install task
+        let versions_dir = self.versions_dir.clone();
+        let global_file = self.global_file.clone();
+        let _state_dir = self.state_dir.clone();
+
+        tokio::spawn(async move {
+            let temp_dir = versions_dir.join(format!(".install-{}", tag));
+            let zip_path = temp_dir.join(&asset_name);
+            let install_dir = versions_dir.join(&tag);
+
+            let result = async {
+                // 1. Download
+                std::fs::create_dir_all(&temp_dir)
+                    .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+
+                crate::versions::download_file(&url, &zip_path, |downloaded, total| {
+                    // Update progress in global.json (best-effort, no lock here)
+                    if let Ok(data) = std::fs::read_to_string(&global_file) {
+                        let mut v: serde_json::Value = serde_json::from_str(&data).unwrap_or_default();
+                        v["install_states"][&tag]["phase"] = serde_json::json!("downloading");
+                        v["install_states"][&tag]["downloaded_bytes"] = serde_json::json!(downloaded);
+                        v["install_states"][&tag]["total_bytes"] = serde_json::json!(total);
+                        let json = serde_json::to_string_pretty(&v).unwrap_or_default();
+                        std::fs::write(&global_file, json).ok();
+                    }
+                })
+                .await
+                .map_err(|e| {
+                    // Mark error
+                    if let Ok(data) = std::fs::read_to_string(&global_file) {
+                        let mut v: serde_json::Value = serde_json::from_str(&data).unwrap_or_default();
+                        v["install_states"][&tag]["phase"] = serde_json::json!("error");
+                        v["install_states"][&tag]["error"] = serde_json::json!(e);
+                        let json = serde_json::to_string_pretty(&v).unwrap_or_default();
+                        std::fs::write(&global_file, json).ok();
+                    }
+                    e
+                })?;
+
+                // 2. Extract
+                {
+                    if let Ok(data) = std::fs::read_to_string(&global_file) {
+                        let mut v: serde_json::Value = serde_json::from_str(&data).unwrap_or_default();
+                        v["install_states"][&tag]["phase"] = serde_json::json!("extracting");
+                        let json = serde_json::to_string_pretty(&v).unwrap_or_default();
+                        std::fs::write(&global_file, json).ok();
+                    }
+                }
+
+                let exe_path = crate::versions::extract_zip(&zip_path, &temp_dir)
+                    .map_err(|e| {
+                        if let Ok(data) = std::fs::read_to_string(&global_file) {
+                            let mut v: serde_json::Value = serde_json::from_str(&data).unwrap_or_default();
+                            v["install_states"][&tag]["phase"] = serde_json::json!("error");
+                            v["install_states"][&tag]["error"] = serde_json::json!(e);
+                            let json = serde_json::to_string_pretty(&v).unwrap_or_default();
+                            std::fs::write(&global_file, json).ok();
+                        }
+                        e
+                    })?;
+
+                // 3. Validate executable
+                if !exe_path.exists() {
+                    let err = "llama-server.exe not found after extraction".to_string();
+                    if let Ok(data) = std::fs::read_to_string(&global_file) {
+                        let mut v: serde_json::Value = serde_json::from_str(&data).unwrap_or_default();
+                        v["install_states"][&tag]["phase"] = serde_json::json!("error");
+                        v["install_states"][&tag]["error"] = serde_json::json!(err);
+                        let json = serde_json::to_string_pretty(&v).unwrap_or_default();
+                        std::fs::write(&global_file, json).ok();
+                    }
+                    return Err(err);
+                }
+
+                // 4. Move to final install path
+                if install_dir.exists() {
+                    crate::versions::remove_dir_all_force(&install_dir);
+                }
+                let move_ok = std::fs::rename(&temp_dir, &install_dir);
+                if move_ok.is_err() {
+                    // Cross-device fallback: copy then remove
+                    copy_dir_all(&temp_dir, &install_dir)
+                        .map_err(|e| format!("Failed to move install dir (copy fallback): {}", e))?;
+                    crate::versions::remove_dir_all_force(&temp_dir);
+                } else if let Err(e) = move_ok {
+                    return Err(format!("Failed to move install dir: {}", e));
+                }
+
+                // 5. Register
+                {
+                    if let Ok(data) = std::fs::read_to_string(&global_file) {
+                        let mut v: serde_json::Value = serde_json::from_str(&data).unwrap_or_default();
+                        v["install_states"][&tag]["phase"] = serde_json::json!("registering");
+                        let json = serde_json::to_string_pretty(&v).unwrap_or_default();
+                        std::fs::write(&global_file, json).ok();
+                    }
+                }
+
+                // Resolve the actual exe path
+                let actual_exe = find_exe_in_dir(&install_dir)
+                    .unwrap_or_else(|| install_dir.join("llama-server.exe"));
+
+                let now = chrono::Utc::now().to_rfc3339();
+
+                // Write the updated global.json with the version registered
+                if let Ok(data) = std::fs::read_to_string(&global_file) {
+                    let mut v: serde_json::Value = serde_json::from_str(&data).unwrap_or_default();
+
+                    // Add to installed_versions
+                    let version_obj = serde_json::json!({
+                        "tag": tag,
+                        "source": "github",
+                        "install_path": install_dir.to_string_lossy().to_string(),
+                        "executable_path": actual_exe.to_string_lossy().to_string(),
+                        "status": "installed",
+                        "installed_at": now,
+                    });
+                    if let Some(arr) = v["installed_versions"].as_array_mut() {
+                        arr.push(version_obj);
+                    }
+
+                    // Clear install state
+                    if let Some(obj) = v["install_states"].as_object_mut() {
+                        obj.remove(&tag);
+                    }
+
+                    let json = serde_json::to_string_pretty(&v).unwrap_or_default();
+                    std::fs::write(&global_file, json).ok();
+                }
+
+                // Cleanup temp
+                crate::versions::remove_file_force(&zip_path);
+                crate::versions::remove_dir_all_force(&temp_dir);
+
+                Ok::<(), String>(())
+            }.await;
+
+            if result.is_err() {
+                // Cleanup on failure
+                crate::versions::remove_dir_all_force(&temp_dir);
+                crate::versions::remove_dir_all_force(&install_dir);
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Cancel an in-progress install for the given tag.
+    pub fn cancel_install(&self, tag: &str) -> Result<(), String> {
+        let _guard = self.state.write().expect("lock poisoned");
+        let mut gs = self.load_global_internal();
+
+        let state = gs.install_states.get(tag).ok_or_else(|| {
+            format!("no install in progress for '{}'", tag)
+        })?;
+
+        if state.phase == crate::models::InstallPhase::Idle
+            || state.phase == crate::models::InstallPhase::Done
+        {
+            return Err(format!("no active install to cancel for '{}'", tag));
+        }
+
+        // Clean up temp install directory
+        let temp_dir = self.versions_dir.join(format!(".install-{}", tag));
+        crate::versions::remove_dir_all_force(&temp_dir);
+
+        gs.install_states.insert(
+            tag.to_string(),
+            crate::models::InstallState {
+                phase: crate::models::InstallPhase::Idle,
+                downloaded_bytes: 0,
+                total_bytes: 0,
+                error: "cancelled".into(),
+            },
+        );
+        self.save_global_internal(&gs);
+        Ok(())
+    }
+
+    /// Uninstall a version by tag.
+    ///
+    /// Returns an error if:
+    /// - The version is the active version
+    /// - The version is not installed
+    pub fn uninstall_version(&self, tag: &str) -> Result<(), String> {
+        let _guard = self.state.write().expect("lock poisoned");
+        let mut gs = self.load_global_internal();
+
+        // Guard: cannot uninstall active version
+        if gs.active_version.as_deref() == Some(tag) {
+            return Err(format!(
+                "cannot uninstall active version '{}'; set another version as active first",
+                tag
+            ));
+        }
+
+        // Find the version
+        let idx = gs.installed_versions
+            .iter()
+            .position(|v| v.tag == tag)
+            .ok_or_else(|| format!("version '{}' is not installed", tag))?;
+
+        let version = &gs.installed_versions[idx];
+
+        // Remove install directory
+        if !version.install_path.is_empty() {
+            crate::versions::remove_dir_all_force(&Path::new(&version.install_path));
+        }
+
+        // Remove from registry
+        gs.installed_versions.remove(idx);
+
+        // Clean up any stale install state
+        gs.install_states.remove(tag);
+
+        self.save_global_internal(&gs);
+        Ok(())
     }
 
     // -- options ------------------------------------------------------------
@@ -927,6 +1374,7 @@ impl LlamaLauncherService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::VersionStatus;
     use std::collections::HashMap;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -1621,5 +2069,388 @@ mod tests {
 
         // Clean up.
         svc.stop();
+    }
+
+    // ---- Acceptance: version management ----
+
+    #[test]
+    fn test_list_installed_versions_empty_by_default() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+
+        let versions = svc.list_installed_versions();
+        assert!(versions.is_empty());
+    }
+
+    #[test]
+    fn test_register_and_list_installed_version() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+
+        let ver = InstalledVersion {
+            tag: "b3594".into(),
+            source: "github".into(),
+            install_path: format!("{}", tmp.path().display()),
+            executable_path: format!("{}/llama-server.exe", tmp.path().display()),
+            status: VersionStatus::Installed,
+            installed_at: None,
+        };
+        svc.register_installed_version(ver);
+
+        let versions = svc.list_installed_versions();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].tag, "b3594");
+        assert_eq!(versions[0].source, "github");
+    }
+
+    #[test]
+    fn test_register_installed_version_updates_existing() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+
+        let ver1 = InstalledVersion {
+            tag: "b3594".into(),
+            source: "github".into(),
+            install_path: "path1".into(),
+            executable_path: "path1/exe".into(),
+            status: VersionStatus::Installed,
+            installed_at: None,
+        };
+        svc.register_installed_version(ver1);
+
+        let ver2 = InstalledVersion {
+            tag: "b3594".into(),
+            source: "manual".into(),
+            install_path: "path2".into(),
+            executable_path: "path2/exe".into(),
+            status: VersionStatus::Missing,
+            installed_at: None,
+        };
+        svc.register_installed_version(ver2);
+
+        let versions = svc.list_installed_versions();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].source, "manual");
+        assert_eq!(versions[0].install_path, "path2");
+    }
+
+    #[test]
+    fn test_unregister_installed_version() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+
+        svc.register_installed_version(InstalledVersion {
+            tag: "b3594".into(),
+            source: "github".into(),
+            install_path: "p".into(),
+            executable_path: "p/exe".into(),
+            status: VersionStatus::Installed,
+            installed_at: None,
+        });
+
+        assert!(svc.unregister_installed_version("b3594"));
+        assert!(svc.list_installed_versions().is_empty());
+
+        // Removing non-existent tag returns false.
+        assert!(!svc.unregister_installed_version("b3594"));
+    }
+
+    #[test]
+    fn test_unregister_clears_active_if_matching() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+
+        svc.register_installed_version(InstalledVersion {
+            tag: "b3594".into(),
+            source: "github".into(),
+            install_path: "p".into(),
+            executable_path: "p/exe".into(),
+            status: VersionStatus::Installed,
+            installed_at: None,
+        });
+        svc.set_active_version("b3594").expect("set active");
+
+        svc.unregister_installed_version("b3594");
+        let gs = svc.load_global();
+        assert_eq!(gs.active_version, None);
+    }
+
+    #[test]
+    fn test_set_active_version_success() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+
+        svc.register_installed_version(InstalledVersion {
+            tag: "b3594".into(),
+            source: "github".into(),
+            install_path: "p".into(),
+            executable_path: "p/exe".into(),
+            status: VersionStatus::Installed,
+            installed_at: None,
+        });
+
+        svc.set_active_version("b3594").expect("set active");
+
+        let gs = svc.load_global();
+        assert_eq!(gs.active_version, Some("b3594".into()));
+    }
+
+    #[test]
+    fn test_set_active_version_not_found() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+
+        let err = svc.set_active_version("nonexistent").expect_err("should fail");
+        assert!(err.contains("not in the installed versions list"));
+    }
+
+    #[test]
+    fn test_resolve_active_executable_fallback_to_llama_server_path() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+
+        // Create a dummy exe file.
+        let exe_path = tmp.path().join("llama-server.exe");
+        std::fs::write(&exe_path, "").expect("create dummy exe");
+
+        // Set llama_server_path but no active version.
+        let mut gs = svc.load_global();
+        gs.llama_server_path = exe_path.to_string_lossy().to_string();
+        svc.save_global(gs);
+
+        let resolved = svc.resolve_active_executable().expect("should resolve");
+        assert_eq!(resolved, exe_path.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn test_resolve_active_executable_stale_active_version() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+
+        // Register a version with a non-existent executable.
+        svc.register_installed_version(InstalledVersion {
+            tag: "b3594".into(),
+            source: "github".into(),
+            install_path: "C:\\nonexistent".into(),
+            executable_path: "C:\\nonexistent\\llama-server.exe".into(),
+            status: VersionStatus::Installed,
+            installed_at: None,
+        });
+        svc.set_active_version("b3594").expect("set active");
+
+        let err = svc.resolve_active_executable().expect_err("should fail with stale");
+        assert!(err.contains("stale"));
+        assert!(err.contains("b3594"));
+    }
+
+    #[test]
+    fn test_resolve_active_executable_nothing_configured() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let _svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+
+        // Fresh service with no global config.
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+        let err = svc.resolve_active_executable().expect_err("should fail");
+        assert!(err.contains("no active version set"));
+    }
+
+    #[test]
+    fn test_resolve_active_executable_active_version_with_existing_exe() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+
+        let exe_path = tmp.path().join("llama-server.exe");
+        std::fs::write(&exe_path, "").expect("create dummy exe");
+
+        svc.register_installed_version(InstalledVersion {
+            tag: "b3594".into(),
+            source: "github".into(),
+            install_path: tmp.path().to_string_lossy().to_string(),
+            executable_path: exe_path.to_string_lossy().to_string(),
+            status: VersionStatus::Installed,
+            installed_at: None,
+        });
+        svc.set_active_version("b3594").expect("set active");
+
+        let resolved = svc.resolve_active_executable().expect("should resolve");
+        assert_eq!(resolved, exe_path.to_string_lossy().to_string());
+    }
+
+    // ---- Acceptance: backward compatibility — old global.json without new keys ----
+
+    #[test]
+    fn test_backward_compat_old_global_json_loads() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+        svc.ensure_state();
+
+        // Simulate an old global.json without the new keys.
+        let old_json = serde_json::json!({
+            "llama_server_path": "C:\\old\\llama-server.exe",
+            "model_dirs": ["C:\\models"],
+            "api_host": "127.0.0.1",
+            "api_port": 7890
+        });
+        let text = serde_json::to_string_pretty(&old_json).expect("serialize");
+        std::fs::write(&svc.global_file, text).expect("write old global.json");
+
+        let gs = svc.load_global();
+        assert_eq!(gs.llama_server_path, "C:\\old\\llama-server.exe");
+        assert_eq!(gs.model_dirs, vec!["C:\\models"]);
+        assert_eq!(gs.api_host, "127.0.0.1");
+        assert_eq!(gs.api_port, 7890);
+        assert!(gs.installed_versions.is_empty());
+        assert_eq!(gs.active_version, None);
+    }
+
+    #[test]
+    fn test_backward_compat_fallback_to_llama_server_path_when_no_active() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+        svc.ensure_state();
+
+        // Old-style config: only llama_server_path, no active_version.
+        let exe_path = tmp.path().join("llama-server.exe");
+        std::fs::write(&exe_path, "").expect("create dummy exe");
+
+        let old_json = serde_json::json!({
+            "llama_server_path": exe_path.to_string_lossy().to_string(),
+            "model_dirs": [],
+            "api_host": "127.0.0.1",
+            "api_port": 0
+        });
+        let text = serde_json::to_string_pretty(&old_json).expect("serialize");
+        std::fs::write(&svc.global_file, text).expect("write old global.json");
+
+        // resolve_active_executable should fall back to llama_server_path.
+        let resolved = svc.resolve_active_executable().expect("should resolve via fallback");
+        assert_eq!(resolved, exe_path.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn test_global_settings_json_shape_with_new_fields() {
+        let gs = GlobalSettings {
+            llama_server_path: "C:\\llama\\server.exe".into(),
+            model_dirs: vec!["C:\\models".into()],
+            api_host: "0.0.0.0".into(),
+            api_port: 8080,
+            installed_versions: vec![InstalledVersion {
+                tag: "b3594".into(),
+                source: "github".into(),
+                install_path: "C:\\versions\\b3594".into(),
+                executable_path: "C:\\versions\\b3594\\llama-server.exe".into(),
+                status: VersionStatus::Installed,
+                installed_at: Some("2025-01-01T00:00:00Z".into()),
+            }],
+            active_version: Some("b3594".into()),
+            install_states: std::collections::HashMap::new(),
+        };
+        let json = serde_json::to_string_pretty(&gs).expect("serialize");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse");
+
+        assert_eq!(parsed["llama_server_path"], "C:\\llama\\server.exe");
+        assert_eq!(parsed["active_version"], "b3594");
+        assert_eq!(parsed["installed_versions"].as_array().unwrap().len(), 1);
+        assert_eq!(parsed["installed_versions"][0]["tag"], "b3594");
+        assert_eq!(parsed["installed_versions"][0]["status"], "installed");
+        assert_eq!(
+            parsed["installed_versions"][0]["installed_at"],
+            "2025-01-01T00:00:00Z"
+        );
+    }
+
+    #[test]
+    fn test_global_settings_json_shape_without_optional_fields() {
+        // When active_version is None and installed_versions is empty,
+        // active_version should be omitted (skip_serializing_if).
+        let gs = GlobalSettings::default();
+        let json = serde_json::to_string_pretty(&gs).expect("serialize");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse");
+
+        assert!(!parsed.as_object().unwrap().contains_key("active_version"));
+        assert_eq!(parsed["installed_versions"], serde_json::json!([]));
+    }
+
+    // ---- Acceptance: uninstall_version removes from registry and disk ----
+
+    #[test]
+    fn test_uninstall_version_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = LlamaLauncherService::new(Some(dir.path().to_path_buf()));
+        svc.ensure_state();
+
+        // Register a version
+        svc.register_installed_version(InstalledVersion {
+            tag: "b3594".into(),
+            source: "github".into(),
+            install_path: dir.path().join("versions").join("b3594").to_str().unwrap().into(),
+            executable_path: dir.path().join("versions").join("b3594").join("llama-server.exe").to_str().unwrap().into(),
+            status: VersionStatus::Installed,
+            installed_at: None,
+        });
+
+        assert_eq!(svc.list_installed_versions().len(), 1);
+
+        // Uninstall
+        svc.uninstall_version("b3594").unwrap();
+        assert_eq!(svc.list_installed_versions().len(), 0);
+    }
+
+    #[test]
+    fn test_uninstall_version_blocks_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = LlamaLauncherService::new(Some(dir.path().to_path_buf()));
+        svc.ensure_state();
+
+        // Register and activate
+        svc.register_installed_version(InstalledVersion {
+            tag: "b3594".into(),
+            source: "github".into(),
+            install_path: dir.path().join("versions").join("b3594").to_str().unwrap().into(),
+            executable_path: dir.path().join("versions").join("b3594").join("llama-server.exe").to_str().unwrap().into(),
+            status: VersionStatus::Installed,
+            installed_at: None,
+        });
+        svc.set_active_version("b3594").unwrap();
+
+        // Cannot uninstall active version
+        let result = svc.uninstall_version("b3594");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("active"));
+    }
+
+    #[test]
+    fn test_uninstall_version_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = LlamaLauncherService::new(Some(dir.path().to_path_buf()));
+        svc.ensure_state();
+
+        let result = svc.uninstall_version("nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not installed"));
+    }
+
+    // ---- Acceptance: cancel_install clears temp and resets state ----
+
+    #[test]
+    fn test_cancel_install_no_active_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = LlamaLauncherService::new(Some(dir.path().to_path_buf()));
+        svc.ensure_state();
+
+        let result = svc.cancel_install("b3594");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no install"));
+    }
+
+    // ---- Acceptance: get_install_state returns None when idle ----
+
+    #[test]
+    fn test_get_install_state_none_when_idle() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = LlamaLauncherService::new(Some(dir.path().to_path_buf()));
+        svc.ensure_state();
+
+        assert!(svc.get_install_state("b3594").is_none());
     }
 }

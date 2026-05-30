@@ -34,6 +34,142 @@ pub struct LlamaOption {
 }
 
 // ---------------------------------------------------------------------------
+// InstalledVersion — metadata for one installed llama.cpp version
+// ---------------------------------------------------------------------------
+
+/// Status of an installed version.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum VersionStatus {
+    /// Fully installed, executable present.
+    Installed,
+    /// Tag recorded but executable or install path missing.
+    Missing,
+}
+
+/// Persisted metadata for a single installed llama.cpp version.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct InstalledVersion {
+    /// Git tag or version identifier (e.g. "b3594").
+    pub tag: String,
+    /// Source origin (e.g. "github", "manual").
+    #[serde(default)]
+    pub source: String,
+    /// Root directory where this version was installed.
+    #[serde(default)]
+    pub install_path: String,
+    /// Absolute path to the `llama-server.exe` binary.
+    #[serde(default)]
+    pub executable_path: String,
+    /// Current install status.
+    #[serde(default = "default_version_status")]
+    pub status: VersionStatus,
+    /// ISO-8601 timestamp when the version was installed (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installed_at: Option<String>,
+}
+
+fn default_version_status() -> VersionStatus {
+    VersionStatus::Installed
+}
+
+// ---------------------------------------------------------------------------
+// GitHubRelease — metadata for one GitHub release (from API)
+// ---------------------------------------------------------------------------
+
+/// A single asset from a GitHub release.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GitHubReleaseAsset {
+    pub name: String,
+    #[serde(rename = "size")]
+    pub size_bytes: u64,
+    #[serde(rename = "browser_download_url")]
+    pub download_url: String,
+}
+
+/// A GitHub release entry (lightweight, only fields we need).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GitHubRelease {
+    pub tag_name: String,
+    pub name: String,
+    #[serde(default)]
+    pub published_at: Option<String>,
+    #[serde(default)]
+    pub assets: Vec<GitHubReleaseAsset>,
+}
+
+// ---------------------------------------------------------------------------
+// InstallState — in-progress install tracking
+// ---------------------------------------------------------------------------
+
+/// Snapshot of an ongoing or completed install operation.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct InstallState {
+    /// Current phase.
+    pub phase: InstallPhase,
+    /// Downloaded bytes (only meaningful during ``downloading`` phase).
+    #[serde(default)]
+    pub downloaded_bytes: u64,
+    /// Total bytes expected (only meaningful during ``downloading`` phase).
+    #[serde(default)]
+    pub total_bytes: u64,
+    /// Human-readable error message (only meaningful when ``phase == error``).
+    #[serde(default)]
+    pub error: String,
+}
+
+impl Default for InstallState {
+    fn default() -> Self {
+        Self {
+            phase: InstallPhase::Idle,
+            downloaded_bytes: 0,
+            total_bytes: 0,
+            error: String::new(),
+        }
+    }
+}
+
+/// Phase of an install operation.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallPhase {
+    Idle,
+    Downloading,
+    Extracting,
+    Validating,
+    Registering,
+    Done,
+    Error,
+}
+
+// ---------------------------------------------------------------------------
+// VersionInfo — combined view of a GitHub release + local install status
+// ---------------------------------------------------------------------------
+
+/// Combined view returned by ``GET /api/versions``.
+#[derive(Serialize, Debug, Clone)]
+pub struct VersionInfo {
+    /// Git tag (e.g. "b3594").
+    pub tag: String,
+    /// Release name from GitHub.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Published-at timestamp from GitHub (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
+    /// ``true`` if this version is installed locally.
+    pub installed: bool,
+    /// ``true`` if this version is the active version.
+    pub active: bool,
+    /// Install state for in-progress installs (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_state: Option<InstallState>,
+    /// Asset suitable for Windows install (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub windows_asset: Option<GitHubReleaseAsset>,
+}
+
+// ---------------------------------------------------------------------------
 // GlobalSettings — custom Deserialize so missing JSON keys are filled from
 // the struct-level Default (identical to legacy GlobalSettings(**data)).
 // ---------------------------------------------------------------------------
@@ -45,6 +181,15 @@ pub struct GlobalSettings {
     pub model_dirs: Vec<String>,
     pub api_host: String,
     pub api_port: i64,
+    /// List of installed llama.cpp versions.
+    #[serde(default)]
+    pub installed_versions: Vec<InstalledVersion>,
+    /// Tag of the currently active version (if any).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_version: Option<String>,
+    /// In-progress install states keyed by tag (persisted for recovery).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub install_states: HashMap<String, InstallState>,
 }
 
 impl Default for GlobalSettings {
@@ -54,6 +199,9 @@ impl Default for GlobalSettings {
             model_dirs: Vec::new(),
             api_host: "127.0.0.1".into(),
             api_port: 0,
+            installed_versions: Vec::new(),
+            active_version: None,
+            install_states: HashMap::new(),
         }
     }
 }
@@ -80,6 +228,25 @@ impl<'de> Deserialize<'de> for GlobalSettings {
         }
         if let Some(v) = map.get("api_port").and_then(|v| v.as_i64()) {
             gs.api_port = v;
+        }
+        // installed_versions — optional; new key, backward-compatible
+        if let Some(arr) = map.get("installed_versions").and_then(|v| v.as_array()) {
+            gs.installed_versions = arr
+                .iter()
+                .filter_map(|v| serde_json::from_value::<InstalledVersion>(v.clone()).ok())
+                .collect();
+        }
+        // active_version — optional; new key, backward-compatible
+        if let Some(v) = map.get("active_version").and_then(|v| v.as_str()) {
+            gs.active_version = Some(v.to_string());
+        }
+        // install_states — optional; new key, backward-compatible
+        if let Some(obj) = map.get("install_states").and_then(|v| v.as_object()) {
+            for (key, val) in obj {
+                if let Ok(state) = serde_json::from_value::<InstallState>(val.clone()) {
+                    gs.install_states.insert(key.clone(), state);
+                }
+            }
         }
         Ok(gs)
     }
