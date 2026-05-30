@@ -84,18 +84,20 @@ tr:hover td{background:#161b22}
 .profile-list{list-style:none}
 .profile-list li{padding:8px 12px;border:1px solid #30363d;border-radius:4px;margin-bottom:6px;
   cursor:pointer;display:flex;justify-content:space-between;align-items:center;transition:border-color .15s}
-.profile-list li:hover,.profile-list li.selected{border-color:#58a6ff;background:#161b22}
+.profile-list li:hover{border-color:#58a6ff;background:#161b22}
+.profile-list li.selected{border-color:#3fb950;background:#161b22}
 .profile-list li .profile-main{display:flex;align-items:center;gap:8px;min-width:0;flex:1}
 .profile-list li .profile-text{min-width:0}
 .profile-list li .pname{font-weight:600;color:#f0f6fc}
 .profile-list li .pmodel{font-size:12px;color:#8b949e}
-.profile-list li .active-badge{display:inline-block;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:700;
-  background:#238636;color:#fff;margin-left:6px;letter-spacing:.3px}
 .profile-list li .running-badge{display:inline-block;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:700;
-  background:#1f6feb;color:#fff;margin-left:6px;letter-spacing:.3px}
+  background:#1f6feb;color:#fff;margin-left:0;letter-spacing:.3px}
 .profile-list li .autostart-badge{display:inline-block;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:700;
-  background:#8957e5;color:#fff;margin-left:6px;letter-spacing:.3px}
+  background:#8957e5;color:#fff;margin-left:0;letter-spacing:.3px}
 .profile-list li .row-action{padding:2px 8px;min-width:32px;justify-content:center}
+.profile-list li .row-action.play{color:#3fb950}
+.profile-list li .row-action.stop{color:#f85149}
+.profile-list li .right-badges{display:flex;align-items:center;gap:6px;flex-shrink:0}
 
 /* ---- misc ---- */
 .mt-8{margin-top:8px}
@@ -604,14 +606,19 @@ async function fetchProfiles() {
       selectedProfileUid = (_profilesCache[selectedProfileIdx] && _profilesCache[selectedProfileIdx].uid) || '';
     }
     _runningProfileIdx = -1;
+    let serverRunning = false;
     try {
       const status = await api('/api/status');
+      serverRunning = !!(status && status.running);
       if (status && status.running) {
         const perf = await api('/api/perf');
         const path = perf && perf.loaded_model_path;
         _runningProfileIdx = resolveRunningProfileIdx(_profilesCache, path);
       }
     } catch (_e) { /* silent: status/perf may be temporarily unavailable */ }
+    if (serverRunning && _runningProfileIdx === -1) {
+      _runningProfileIdx = selectedProfileIdx;
+    }
     const ul = $('#profileList');
     ul.innerHTML = '';
     _profilesCache.forEach((p, i) => {
@@ -620,12 +627,12 @@ async function fetchProfiles() {
       const isRunning = (i === _runningProfileIdx);
       const isAutostart = !!p.start_on_boot;
       const badges = [
-        isActive ? '<span class="active-badge">&#9654; active</span>' : '',
         isRunning ? '<span class="running-badge">running</span>' : '',
         isAutostart ? '<span class="autostart-badge">autostart</span>' : ''
       ].join('');
-      li.innerHTML = `<span class="profile-main"><button class="btn small row-action" type="button" data-row-action="${isRunning ? 'stop' : 'play'}">${isRunning ? '&#9632;' : '&#9654;'}</button><span class="profile-text"><span class="pname">${esc(p.name)}</span>${badges} <span class="pmodel">${esc(p.model_path || 'no model')}</span></span></span>
-        <span class="text-sm">${i}</span>`;
+      li.classList.toggle('selected', isActive);
+      li.innerHTML = `<span class="profile-main"><button class="btn small row-action ${isRunning ? 'stop' : 'play'}" type="button" data-row-action="${isRunning ? 'stop' : 'play'}">${isRunning ? '&#9632;' : '&#9654;'}</button><span class="profile-text"><span class="pname">${esc(p.name)}</span> <span class="pmodel">${esc(p.model_path || 'no model')}</span></span></span>
+        <span class="right-badges">${badges}</span>`;
       const actionBtn = li.querySelector('[data-row-action]');
       actionBtn.addEventListener('click', (ev) => {
         ev.stopPropagation();
