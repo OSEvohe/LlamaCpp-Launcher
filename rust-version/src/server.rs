@@ -475,6 +475,14 @@ async fn post_launch(
     let service = state.write().expect("service lock poisoned");
     let (resolved_exe, cmd) = prepare_launch_data(body, &service)?;
     let pid = service.launch(cmd.clone(), &resolved_exe);
+    if pid < 0 {
+        return Err(ApiError::bad_request(
+            "llama-server already running. Stop before relaunch.",
+        ));
+    }
+    if pid == 0 {
+        return Err(ApiError::internal("failed to start llama-server process"));
+    }
     Ok(Json(serde_json::json!({ "pid": pid, "command": cmd })))
 }
 

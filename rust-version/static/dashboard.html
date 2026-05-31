@@ -433,12 +433,16 @@ let _runtimeInstalledSet = new Set();
 function resolveRunningProfileIdx(profiles, loadedModelPath) {
   if (!Array.isArray(profiles) || !profiles.length || !loadedModelPath) return -1;
   const normLoaded = String(loadedModelPath).replace(/\\/g, '/').toLowerCase();
-  const exactIdx = profiles.findIndex(p => {
+  const exactMatches = [];
+  profiles.forEach((p, i) => {
     const modelPath = String((p && p.model_path) || '');
-    if (!modelPath) return false;
-    return modelPath.replace(/\\/g, '/').toLowerCase() === normLoaded;
+    if (!modelPath) return;
+    if (modelPath.replace(/\\/g, '/').toLowerCase() === normLoaded) {
+      exactMatches.push(i);
+    }
   });
-  if (exactIdx >= 0) return exactIdx;
+  if (exactMatches.length === 1) return exactMatches[0];
+  if (exactMatches.length > 1) return -1;
 
   const loadedBase = normLoaded.split('/').pop();
   if (!loadedBase) return -1;
@@ -661,19 +665,14 @@ async function fetchProfiles() {
       selectedProfileUid = (_profilesCache[selectedProfileIdx] && _profilesCache[selectedProfileIdx].uid) || '';
     }
     _runningProfileIdx = -1;
-    let serverRunning = false;
     try {
       const status = await api('/api/status');
-      serverRunning = !!(status && status.running);
       if (status && status.running) {
         const perf = await api('/api/perf');
         const path = perf && perf.loaded_model_path;
         _runningProfileIdx = resolveRunningProfileIdx(_profilesCache, path);
       }
     } catch (_e) { /* silent: status/perf may be temporarily unavailable */ }
-    if (serverRunning && _runningProfileIdx === -1) {
-      _runningProfileIdx = selectedProfileIdx;
-    }
     const ul = $('#profileList');
     ul.innerHTML = '';
     _profilesCache.forEach((p, i) => {

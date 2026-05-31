@@ -320,7 +320,7 @@ impl LlamaLauncherService {
         self.ensure_state();
         let existing_pid = read_pid(&self.pid_file);
         if existing_pid > 0 && process::is_process_running(existing_pid) {
-            panic!("llama-server already running (PID {}). Stop before relaunch.", existing_pid);
+            return -1;
         }
         if existing_pid > 0 && self.pid_file.exists() {
             std::fs::remove_file(&self.pid_file).ok();
@@ -1126,6 +1126,10 @@ impl LlamaLauncherService {
 
     /// Launch the server with the given command.
     pub fn launch(&self, cmd: Vec<String>, exe_path: &str) -> i32 {
+        let existing_pid = read_pid(&self.pid_file);
+        if existing_pid > 0 && process::is_process_running(existing_pid) {
+            return -1;
+        }
         // Full reset of monitoring (stats + cursor) before launching (avoids reentrant lock).
         {
             let mut mon = self.monitoring.write().expect("lock poisoned");
@@ -2079,6 +2083,33 @@ mod tests {
 
         // Clean up.
         svc.stop();
+    }
+
+    #[test]
+    fn test_launch_while_running_keeps_runtime_state() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+        svc.ensure_state();
+
+        {
+            let mut state = svc.state.write().expect("lock poisoned");
+            state.current_model_path = "kept-model.gguf".to_string();
+        }
+
+        std::fs::write(
+            svc.log_out_path(),
+            "llama_model_loader: loaded model\n",
+        )
+        .expect("write log");
+        let seeded = svc.refresh_and_get_perf_stats();
+        assert!(seeded.model_loaded);
+
+        write_pid(&svc.pid_file, std::process::id() as i32);
+
+        let pid = svc.launch(vec!["ignored".into()], "");
+        assert_eq!(pid, -1);
+        assert_eq!(svc.current_model_path(), "kept-model.gguf");
+        assert!(svc.get_perf_stats().model_loaded);
     }
 
     // ---- Acceptance: version management ----
