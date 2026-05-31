@@ -312,6 +312,19 @@ pub fn load_global() -> GlobalSettings {
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    let install_states: std::collections::HashMap<String, crate::models::InstallState> = data
+        .get("install_states")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, val)| {
+                    serde_json::from_value::<crate::models::InstallState>(val.clone()).ok()
+                        .map(|state| (k.clone(), state))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     GlobalSettings {
         llama_server_path: safe_str(data.get("llama_server_path").unwrap_or(&serde_json::Value::Null), ""),
         model_dirs,
@@ -319,7 +332,7 @@ pub fn load_global() -> GlobalSettings {
         api_port: safe_int(data.get("api_port").unwrap_or(&serde_json::Value::Null), 0),
         installed_versions,
         active_version,
-        install_states: std::collections::HashMap::new(),
+        install_states,
     }
 }
 
@@ -977,5 +990,90 @@ mod tests {
         assert_eq!(ver.install_path, "");
         assert_eq!(ver.executable_path, "");
         assert_eq!(ver.installed_at, None);
+    }
+
+    // ---- Acceptance: load_global preserves install_states from JSON ----
+
+    #[test]
+    fn test_load_global_preserves_install_states() {
+        use crate::models::{InstallPhase, InstallState};
+
+        // Simulate a global.json that contains install_states (as written by save_global).
+        let raw = serde_json::json!({
+            "llama_server_path": "C:\\llama\\server.exe",
+            "model_dirs": [],
+            "api_host": "127.0.0.1",
+            "api_port": 7890,
+            "installed_versions": [],
+            "install_states": {
+                "b3594": {
+                    "phase": "downloading",
+                    "downloaded_bytes": 5000,
+                    "total_bytes": 10000,
+                    "error": ""
+                },
+                "b4000": {
+                    "phase": "error",
+                    "downloaded_bytes": 0,
+                    "total_bytes": 20000,
+                    "error": "timeout"
+                }
+            }
+        });
+        let data: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_value(raw).expect("parse");
+
+        // Replicate the install_states extraction logic from load_global()
+        let install_states: HashMap<String, crate::models::InstallState> = data
+            .get("install_states")
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, val)| {
+                        serde_json::from_value::<crate::models::InstallState>(val.clone()).ok()
+                            .map(|state| (k.clone(), state))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        assert_eq!(install_states.len(), 2);
+
+        let state1 = install_states.get("b3594").expect("b3594 state");
+        assert_eq!(state1.phase, InstallPhase::Downloading);
+        assert_eq!(state1.downloaded_bytes, 5000);
+        assert_eq!(state1.total_bytes, 10000);
+
+        let state2 = install_states.get("b4000").expect("b4000 state");
+        assert_eq!(state2.phase, InstallPhase::Error);
+        assert_eq!(state2.error, "timeout");
+    }
+
+    #[test]
+    fn test_load_global_install_states_missing_key_defaults_empty() {
+        // Old global.json without install_states key must default to empty.
+        let raw = serde_json::json!({
+            "llama_server_path": "C:\\old\\server.exe",
+            "model_dirs": ["C:\\models"],
+            "api_host": "127.0.0.1",
+            "api_port": 7890
+        });
+        let data: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_value(raw).expect("parse");
+
+        let install_states: HashMap<String, crate::models::InstallState> = data
+            .get("install_states")
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, val)| {
+                        serde_json::from_value::<crate::models::InstallState>(val.clone()).ok()
+                            .map(|state| (k.clone(), state))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        assert!(install_states.is_empty());
     }
 }

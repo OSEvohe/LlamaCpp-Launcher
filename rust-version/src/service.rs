@@ -793,11 +793,18 @@ impl LlamaLauncherService {
     /// This method validates preconditions, updates the install state to
     /// ``downloading``, and spawns an async task that performs the actual
     /// download, extraction, and registration.
-    pub async fn start_install_version(
+    pub fn start_install_version(
         &self,
         tag: &str,
         asset: &crate::models::GitHubReleaseAsset,
     ) -> Result<(), String> {
+        if crate::versions::find_windows_asset(std::slice::from_ref(asset)).is_none() {
+            return Err(format!(
+                "asset '{}' is not a supported Windows llama-server package",
+                asset.name
+            ));
+        }
+
         let tag = tag.to_string();
         let url = asset.download_url.clone();
         let asset_name = asset.name.clone();
@@ -1170,11 +1177,14 @@ impl LlamaLauncherService {
         };
         let profile = &profiles[idx];
 
-        let settings = self.load_global();
-        let exe_path = settings.llama_server_path;
-        if exe_path.trim().is_empty() {
-            return Err("no llama-server path configured".to_string());
-        }
+        let exe_path = self.resolve_active_executable().or_else(|_| {
+            let settings = self.load_global();
+            if settings.llama_server_path.trim().is_empty() {
+                Err("no llama-server path configured".to_string())
+            } else {
+                Ok(settings.llama_server_path)
+            }
+        })?;
 
         let options = self.load_options(&exe_path)?;
         let cmd = self.build_command(profile, &exe_path, &options)?;
@@ -1374,7 +1384,7 @@ impl LlamaLauncherService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::VersionStatus;
+    use crate::models::{InstallPhase, VersionStatus};
     use std::collections::HashMap;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -2452,5 +2462,127 @@ mod tests {
         svc.ensure_state();
 
         assert!(svc.get_install_state("b3594").is_none());
+    }
+
+    #[test]
+    fn test_start_install_version_rejects_unsupported_asset() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = LlamaLauncherService::new(Some(dir.path().to_path_buf()));
+        svc.ensure_state();
+
+        let asset = crate::models::GitHubReleaseAsset {
+            name: "llama-cli-b3594-bin-win.zip".into(),
+            size_bytes: 10,
+            download_url: "https://example.invalid/llama-cli.zip".into(),
+        };
+
+        let result = svc.start_install_version("b3594", &asset);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not a supported Windows llama-server package"));
+        assert!(svc.get_install_state("b3594").is_none());
+        assert!(svc.list_installed_versions().is_empty());
+    }
+
+    #[test]
+    fn test_start_install_version_download_failure_not_registered() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = LlamaLauncherService::new(Some(dir.path().to_path_buf()));
+        svc.ensure_state();
+
+        let asset = crate::models::GitHubReleaseAsset {
+            name: "llama-server-b3594-bin-win-ssl.zip".into(),
+            size_bytes: 10,
+            download_url: "http://127.0.0.1:1/llama-server-b3594-bin-win-ssl.zip".into(),
+        };
+
+        let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
+        rt.block_on(async {
+            svc.start_install_version("b3594", &asset).expect("start install");
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                if let Some(state) = svc.get_install_state("b3594") {
+                    if state.phase == InstallPhase::Error {
+                        assert!(!state.error.is_empty());
+                        break;
+                    }
+                }
+                assert!(std::time::Instant::now() < deadline, "install did not fail in time");
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        });
+
+        assert!(svc.list_installed_versions().is_empty());
+    }
+
+    // ---- Acceptance: apply_startup_profile resolves exe through version-aware resolver ----
+
+    #[test]
+    fn test_apply_startup_profile_uses_version_resolver() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = LlamaLauncherService::new(Some(dir.path().to_path_buf()));
+        svc.ensure_state();
+
+        // Create a dummy exe file
+        let exe_path = dir.path().join("llama-server.exe");
+        std::fs::write(&exe_path, "").expect("create dummy exe");
+
+        // Register an installed version and set as active
+        svc.register_installed_version(InstalledVersion {
+            tag: "b3594".into(),
+            source: "github".into(),
+            install_path: dir.path().to_string_lossy().to_string(),
+            executable_path: exe_path.to_string_lossy().to_string(),
+            status: VersionStatus::Installed,
+            installed_at: None,
+        });
+        svc.set_active_version("b3594").expect("set active");
+
+        // Ensure llama_server_path is empty (old-style path not configured)
+        let mut gs = svc.load_global();
+        gs.llama_server_path = String::new();
+        svc.save_global(gs);
+
+        // Verify resolve_active_executable finds the versioned exe
+        let resolved = svc.resolve_active_executable().expect("should resolve via active version");
+        assert_eq!(resolved, exe_path.to_string_lossy().to_string());
+
+        // Create a startup profile
+        svc.add_profile("startup-test");
+        let mut data = HashMap::new();
+        data.insert("start_on_boot".into(), serde_json::json!(true));
+        svc.update_profile(1, &data).expect("update");
+
+        // apply_startup_profile should NOT error with "no llama-server path configured"
+        // because resolve_active_executable() should find the versioned exe.
+        // It will fail later (load_options/build_command) because the dummy exe isn't real,
+        // but the error must not be the old "no path configured" message.
+        let result = svc.apply_startup_profile();
+        if let Err(e) = result {
+            assert!(
+                !e.contains("no llama-server path configured"),
+                "should not get 'no llama-server path configured' when active version is set; got: {}",
+                e
+            );
+        }
+    }
+
+    #[test]
+    fn test_apply_startup_profile_fallback_to_llama_server_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = LlamaLauncherService::new(Some(dir.path().to_path_buf()));
+        svc.ensure_state();
+
+        // No active version, but llama_server_path is set
+        let exe_path = dir.path().join("llama-server.exe");
+        std::fs::write(&exe_path, "").expect("create dummy exe");
+
+        let mut gs = svc.load_global();
+        gs.llama_server_path = exe_path.to_string_lossy().to_string();
+        svc.save_global(gs);
+
+        // resolve_active_executable should fall back to llama_server_path
+        let resolved = svc.resolve_active_executable().expect("should resolve via fallback");
+        assert_eq!(resolved, exe_path.to_string_lossy().to_string());
     }
 }
