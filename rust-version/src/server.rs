@@ -250,26 +250,58 @@ async fn get_versions_available(State(state): State<SharedState>) -> Result<Json
     let releases = crate::versions::fetch_releases()
         .await
         .map_err(|err| ApiError::internal(&err.to_string()))?;
-    Ok(Json(serde_json::json!({ "releases": releases })))
+
+    let available = map_available_releases(releases);
+
+    Ok(Json(serde_json::json!({ "releases": available })))
+}
+
+#[derive(Serialize)]
+struct AvailableWindowsVariant {
+    asset_name: String,
+    variant: String,
+    size_bytes: u64,
+}
+
+#[derive(Serialize)]
+struct AvailableRelease {
+    tag_name: String,
+    name: String,
+    published_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    windows_asset: Option<crate::models::GitHubReleaseAsset>,
+    windows_variants: Vec<AvailableWindowsVariant>,
+}
+
+fn map_available_releases(releases: Vec<crate::models::GitHubRelease>) -> Vec<AvailableRelease> {
+    releases
+        .into_iter()
+        .map(|r| {
+            let windows_variants = r
+                .assets
+                .iter()
+                .filter(|a| crate::versions::is_supported_windows_asset_name(&a.name))
+                .map(|a| AvailableWindowsVariant {
+                    asset_name: a.name.clone(),
+                    variant: crate::versions::classify_windows_variant(&a.name).to_string(),
+                    size_bytes: a.size_bytes,
+                })
+                .collect();
+            AvailableRelease {
+                tag_name: r.tag_name,
+                name: r.name,
+                published_at: r.published_at,
+                windows_asset: crate::versions::find_windows_asset(&r.assets),
+                windows_variants,
+            }
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
 struct InstallVersionRequest {
     tag: String,
     asset_name: Option<String>,
-}
-
-fn is_supported_windows_asset_name(asset_name: &str) -> bool {
-    let name = asset_name.to_ascii_lowercase();
-    let has_windows_token = name.split(|c: char| !c.is_ascii_alphanumeric()).any(|token| {
-        token == "windows" || token == "win" || (token.starts_with("win") && token != "darwin")
-    });
-    name.ends_with(".zip")
-        && name.contains("llama-server")
-        && has_windows_token
-        && !name.contains("-patches")
-        && !name.contains("linux")
-        && !name.contains("macos")
 }
 
 async fn post_versions_install(
@@ -286,9 +318,9 @@ async fn post_versions_install(
         return Err(ApiError::bad_request("tag must be a non-empty string"));
     }
     if let Some(asset_name) = req.asset_name.as_deref() {
-        if !is_supported_windows_asset_name(asset_name) {
+        if !crate::versions::is_supported_windows_asset_name(asset_name) {
             return Err(ApiError::bad_request(&format!(
-                "unsupported asset '{}': expected Windows llama-server zip",
+                "unsupported asset '{}': expected supported Windows llama.cpp zip",
                 asset_name
             )));
         }
@@ -311,7 +343,7 @@ async fn post_versions_install(
             .ok_or_else(|| ApiError::not_found(&format!("asset '{}' not found", asset_name)))?
     } else {
         crate::versions::find_windows_asset(&release.assets)
-            .ok_or_else(|| ApiError::bad_request("no supported Windows llama-server asset found"))?
+            .ok_or_else(|| ApiError::bad_request("no supported Windows llama.cpp asset found"))?
     };
 
     let service = state.read().expect("service lock poisoned");
@@ -955,27 +987,56 @@ mod tests {
     #[test]
     fn test_supported_windows_asset_alternate_naming() {
         // Alternate naming without "bin-win" must be accepted
-        assert!(is_supported_windows_asset_name("llama-server-b3594-bin-windows-ssl.zip"));
-        assert!(is_supported_windows_asset_name("llama-server-b3600-win-x64.zip"));
-        assert!(is_supported_windows_asset_name("llama-server-b3700-windows-cuda.zip"));
+        assert!(crate::versions::is_supported_windows_asset_name("llama-server-b3594-bin-windows-ssl.zip"));
+        assert!(crate::versions::is_supported_windows_asset_name("llama-b9442-bin-win-cpu-x64.zip"));
+        assert!(crate::versions::is_supported_windows_asset_name("llama-b9442-bin-win-cuda-x64.zip"));
     }
 
     #[test]
     fn test_supported_windows_asset_rejects_non_server_and_patches() {
         // Patch asset — rejected
-        assert!(!is_supported_windows_asset_name("llama-server-b3594-bin-win-patches.zip"));
+        assert!(!crate::versions::is_supported_windows_asset_name("llama-server-b3594-bin-win-patches.zip"));
         // Linux — rejected
-        assert!(!is_supported_windows_asset_name("llama-server-b3594-linux-avx.zip"));
+        assert!(!crate::versions::is_supported_windows_asset_name("llama-server-b3594-linux-avx.zip"));
         // macOS — rejected
-        assert!(!is_supported_windows_asset_name("llama-server-b3594-macos-arm64.zip"));
+        assert!(!crate::versions::is_supported_windows_asset_name("llama-server-b3594-macos-arm64.zip"));
         // Non-server — rejected
-        assert!(!is_supported_windows_asset_name("llama-cli-b3594-bin-win.zip"));
+        assert!(!crate::versions::is_supported_windows_asset_name("llama-cli-b3594-bin-win.zip"));
         // Not a zip — rejected
-        assert!(!is_supported_windows_asset_name("llama-server-b3594-bin-win.tar.gz"));
+        assert!(!crate::versions::is_supported_windows_asset_name("llama-server-b3594-bin-win.tar.gz"));
         // Missing Windows token — rejected
-        assert!(!is_supported_windows_asset_name("llama-server-b3594-bin-avx2.zip"));
+        assert!(!crate::versions::is_supported_windows_asset_name("llama-server-b3594-bin-avx2.zip"));
         // darwin must not match via "win" substring
-        assert!(!is_supported_windows_asset_name("llama-server-b3594-darwin-arm64.zip"));
+        assert!(!crate::versions::is_supported_windows_asset_name("llama-server-b3594-darwin-arm64.zip"));
+    }
+
+    #[test]
+    fn versions_available_shape_keeps_legacy_windows_asset_and_new_variants() {
+        let releases = vec![crate::models::GitHubRelease {
+            tag_name: "b1000".into(),
+            name: "b1000".into(),
+            published_at: Some("2026-01-01T00:00:00Z".into()),
+            assets: vec![
+                crate::models::GitHubReleaseAsset {
+                    name: "llama-b1000-bin-win-cpu-x64.zip".into(),
+                    size_bytes: 10,
+                    download_url: "https://example.com/cpu.zip".into(),
+                },
+                crate::models::GitHubReleaseAsset {
+                    name: "llama-b1000-bin-win-cuda-x64.zip".into(),
+                    size_bytes: 20,
+                    download_url: "https://example.com/cuda.zip".into(),
+                },
+            ],
+        }];
+
+        let body = serde_json::to_value(serde_json::json!({ "releases": map_available_releases(releases) }))
+            .expect("serialize response body");
+        let release = &body["releases"][0];
+
+        assert_eq!(release["windows_asset"]["name"], "llama-b1000-bin-win-cpu-x64.zip");
+        assert_eq!(release["windows_asset"]["size"], 10);
+        assert_eq!(release["windows_variants"].as_array().map(|v| v.len()), Some(2));
     }
 
     #[tokio::test]

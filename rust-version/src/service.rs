@@ -800,7 +800,7 @@ impl LlamaLauncherService {
     ) -> Result<(), String> {
         if crate::versions::find_windows_asset(std::slice::from_ref(asset)).is_none() {
             return Err(format!(
-                "asset '{}' is not a supported Windows llama-server package",
+                "asset '{}' is not a supported Windows llama.cpp package",
                 asset.name
             ));
         }
@@ -2478,7 +2478,7 @@ mod tests {
 
         let result = svc.start_install_version("b3594", &asset);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not a supported Windows llama-server package"));
+        assert!(result.unwrap_err().contains("not a supported Windows llama.cpp package"));
         assert!(svc.get_install_state("b3594").is_none());
         assert!(svc.list_installed_versions().is_empty());
     }

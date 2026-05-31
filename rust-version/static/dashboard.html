@@ -1350,9 +1350,33 @@ function renderAvailableVersions(releases) {
     const installBtn = document.createElement('button');
     installBtn.className = 'btn small';
     installBtn.type = 'button';
-    installBtn.textContent = 'Install';
-    installBtn.addEventListener('click', () => doInstallVersion(r.tag_name));
+    const variants = Array.isArray(r.windows_variants) ? r.windows_variants : [];
+    const preferred = variants.find(v => v.variant === 'cpu') || variants[0] || null;
+    installBtn.textContent = preferred ? `Install ${preferred.variant.toUpperCase()}` : 'Install';
+    installBtn.disabled = !preferred;
+    installBtn.onclick = () => {
+      if (preferred) doInstallVersion(r.tag_name, preferred.asset_name);
+    };
     row.appendChild(installBtn);
+
+    if (variants.length > 1) {
+      row.appendChild(document.createTextNode(' '));
+      const select = document.createElement('select');
+      select.className = 'small';
+      variants.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = v.asset_name;
+        opt.textContent = v.variant.toUpperCase();
+        if (v.asset_name === preferred.asset_name) opt.selected = true;
+        select.appendChild(opt);
+      });
+      select.addEventListener('change', () => {
+        const variant = variants.find(v => v.asset_name === select.value);
+        installBtn.textContent = variant ? `Install ${variant.variant.toUpperCase()}` : 'Install';
+      });
+      row.appendChild(select);
+      installBtn.onclick = () => doInstallVersion(r.tag_name, select.value);
+    }
 
     list.appendChild(row);
   });
@@ -1366,9 +1390,10 @@ async function doSetActiveVersion(tag) {
   } catch (e) { show($('#versionsResult'), e.message, true); }
 }
 
-async function doInstallVersion(tag) {
+async function doInstallVersion(tag, assetName) {
   try {
-    const d = await api('/api/versions/install', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ tag }) });
+    const payload = assetName ? { tag, asset_name: assetName } : { tag };
+    const d = await api('/api/versions/install', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     show($('#versionsResult'), `Install started for ${d.tag}`, false);
     fetchVersions();
   } catch (e) { show($('#versionsResult'), e.message, true); }

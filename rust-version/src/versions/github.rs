@@ -141,23 +141,29 @@ pub async fn fetch_releases() -> Result<Vec<GitHubRelease>, GitHubError> {
     Ok(releases)
 }
 
-/// Filter a release's assets to find the best Windows ``llama-server`` binary
-/// suitable for install.
+/// Check whether an asset name looks like a supported Windows llama.cpp binary zip.
+pub fn is_supported_windows_asset_name(asset_name: &str) -> bool {
+    let name = asset_name.to_ascii_lowercase();
+    let has_supported_package_token = name.contains("-bin-") || name.starts_with("llama-server-");
+    let has_windows_token = name.split(|c: char| !c.is_ascii_alphanumeric()).any(|token| {
+        token == "windows" || token == "win" || (token.starts_with("win") && token != "darwin")
+    });
+
+    name.ends_with(".zip")
+        && name.starts_with("llama-")
+        && has_supported_package_token
+        && !name.contains("llama-cli")
+        && has_windows_token
+        && !name.contains("-patches")
+        && !name.contains("linux")
+        && !name.contains("macos")
+}
+
+/// Filter a release's assets to find the best Windows binary suitable for install.
 ///
 /// Prefers plain (CPU) builds over CUDA builds.
 pub fn find_windows_asset(assets: &[GitHubReleaseAsset]) -> Option<GitHubReleaseAsset> {
-    let is_windows_server = |a: &&GitHubReleaseAsset| -> bool {
-        let name = a.name.to_ascii_lowercase();
-        let has_windows_token = name.split(|c: char| !c.is_ascii_alphanumeric()).any(|token| {
-            token == "windows" || token == "win" || (token.starts_with("win") && token != "darwin")
-        });
-        name.ends_with(".zip")
-            && name.contains("llama-server")
-            && has_windows_token
-            && !name.contains("-patches")
-            && !name.contains("linux")
-            && !name.contains("macos")
-    };
+    let is_windows_server = |a: &&GitHubReleaseAsset| -> bool { is_supported_windows_asset_name(&a.name) };
 
     // First pass: prefer non-CUDA (CPU) builds
     let cpu_asset = assets
@@ -180,6 +186,19 @@ pub fn find_windows_asset(assets: &[GitHubReleaseAsset]) -> Option<GitHubRelease
         .filter(is_windows_server)
         .cloned()
         .next()
+}
+
+pub fn classify_windows_variant(asset_name: &str) -> &'static str {
+    let name = asset_name.to_ascii_lowercase();
+    if name.contains("cuda") {
+        "cuda"
+    } else if name.contains("vulkan") {
+        "vulkan"
+    } else if name.contains("rocm") {
+        "rocm"
+    } else {
+        "cpu"
+    }
 }
 
 /// Check whether a release tag looks like a valid llama.cpp release.
@@ -287,6 +306,19 @@ mod tests {
     }
 
     #[test]
+    fn test_find_windows_asset_accepts_current_release_naming() {
+        let assets = vec![GitHubReleaseAsset {
+            name: "llama-b9442-bin-win-cpu-x64.zip".into(),
+            size_bytes: 25_000_000,
+            download_url: "https://example.com/current-cpu.zip".into(),
+        }];
+
+        let asset = find_windows_asset(&assets);
+        assert!(asset.is_some());
+        assert!(asset.unwrap().name.contains("b9442"));
+    }
+
+    #[test]
     fn test_find_windows_asset_alternate_naming_accepted() {
         let assets = vec![
             // Alternate Windows naming without "bin-win"
@@ -362,5 +394,24 @@ mod tests {
 
         let asset = find_windows_asset(&assets);
         assert!(asset.is_none());
+    }
+
+    #[test]
+    fn test_supported_windows_asset_name_current_release_naming() {
+        assert!(is_supported_windows_asset_name("llama-b9442-bin-win-cpu-x64.zip"));
+        assert!(is_supported_windows_asset_name("llama-b9442-bin-win-cuda-x64.zip"));
+        assert!(!is_supported_windows_asset_name("llama-b9442-win-cpu-x64.zip"));
+    }
+
+    #[test]
+    fn test_supported_windows_asset_name_accepts_legacy_win_x64_naming() {
+        assert!(is_supported_windows_asset_name("llama-server-b3600-win-x64.zip"));
+    }
+
+    #[test]
+    fn test_classify_windows_variant() {
+        assert_eq!(classify_windows_variant("llama-b9442-bin-win-cpu-x64.zip"), "cpu");
+        assert_eq!(classify_windows_variant("llama-b9442-bin-win-cuda-x64.zip"), "cuda");
+        assert_eq!(classify_windows_variant("llama-b9442-bin-win-vulkan-x64.zip"), "vulkan");
     }
 }
