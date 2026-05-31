@@ -18,6 +18,9 @@ a:hover{text-decoration:underline}
   border-bottom:1px solid #30363d;margin-bottom:16px}
 .header h1{font-size:20px;font-weight:600;color:#f0f6fc}
 .header-controls{display:flex;align-items:center;gap:6px}
+.header-runtime{display:flex;align-items:center;gap:6px}
+.header-runtime label{margin:0;font-size:12px;color:#8b949e}
+.header-runtime select{min-width:170px}
 .badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:600}
 .badge.green{background:#238636;color:#fff}
 .badge.red{background:#da3633;color:#fff}
@@ -114,6 +117,7 @@ tr:hover td{background:#161b22}
 .progress-wrap{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px}
 .progress-track{width:100%;height:10px;background:#21262d;border-radius:999px;overflow:hidden}
 .progress-fill{height:100%;background:#1f6feb;width:0;transition:width .2s}
+.runtime-columns{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 
 /* ---- advanced panel ---- */
 .adv-scroll{max-height:340px;overflow-y:auto;border:1px solid #30363d;border-radius:4px;padding:6px 0}
@@ -157,6 +161,10 @@ input.switch:checked::after{transform:translateX(18px);background:#fff}
       <button class="btn primary small" onclick="doLaunch()">&#9654; Launch</button>
       <button class="btn danger small" onclick="doStop()">&#9632; Stop</button>
       <button class="btn small" onclick="doRestart()">&#8635; Restart</button>
+      <div class="header-runtime">
+        <label for="headerRuntimeSelect">Runtime</label>
+        <select id="headerRuntimeSelect"><option value="">-- none --</option></select>
+      </div>
       <span id="statusBadge" class="badge gray">checking...</span>
     </div>
   </div>
@@ -323,20 +331,22 @@ input.switch:checked::after{transform:translateX(18px);background:#fff}
       <div class="btn-group mb-8">
         <button class="btn small" onclick="fetchVersions()">&#8635; Refresh</button>
       </div>
-      <div class="form-grid">
-        <div class="form-row">
-          <label>Version</label>
-          <input id="runtimeVersionInput" type="text" list="runtimeVersionList" placeholder="Search version tag...">
-          <datalist id="runtimeVersionList"></datalist>
-          <div id="runtimeVersionHint" class="text-sm mt-8"></div>
+      <div class="runtime-columns">
+        <div>
+          <h3>Search exact version</h3>
+          <div class="form-row">
+            <label>Version tag</label>
+            <input id="runtimeVersionInput" type="text" placeholder="e.g. b5600">
+          </div>
+          <div class="btn-group mb-8">
+            <button class="btn small" id="runtimeSearchBtn" type="button">Search</button>
+          </div>
+          <div id="runtimeSearchResult" class="text-sm"></div>
         </div>
-        <div class="form-row">
-          <label>Variant</label>
-          <select id="runtimeVariantSelect"><option value="">-- choose variant --</option></select>
+        <div>
+          <h3>Latest available</h3>
+          <div id="runtimeLatestCard" class="text-sm">Loading…</div>
         </div>
-      </div>
-      <div class="btn-group mb-8">
-        <button class="btn small" id="runtimeInstallBtn" type="button">Install selected</button>
       </div>
       <div id="runtimeInstallProgress" class="progress-wrap mb-8" style="display:none">
         <div id="runtimeInstallPhase" class="text-sm mb-8"></div>
@@ -1307,10 +1317,11 @@ async function fetchVersions() {
     _activeRuntimeVersion = activeTag;
 
     renderInstalledVersions(installed, activeTag);
-    renderRuntimeVersionPicker(releases, installed, activeTag);
+    renderRuntimePanels(releases, installed, activeTag);
     renderInstallProgress(installedResp.install_states || null);
     syncLoadedModel();
   } catch (e) {
+    clearHeaderRuntimeSelectOnError();
     show(resultEl, e.message, true);
   } finally {
     versionsFetchInFlight = false;
@@ -1364,15 +1375,6 @@ function renderInstalledVersions(installed, activeTag) {
     row.appendChild(path);
     row.appendChild(document.createElement('br'));
 
-    const setBtn = document.createElement('button');
-    setBtn.className = 'btn small';
-    setBtn.type = 'button';
-    setBtn.textContent = 'Set active';
-    setBtn.addEventListener('click', () => doSetActiveVersion(v.tag));
-    row.appendChild(setBtn);
-
-    row.appendChild(document.createTextNode(' '));
-
     const delBtn = document.createElement('button');
     delBtn.className = 'btn danger small';
     delBtn.type = 'button';
@@ -1389,56 +1391,137 @@ function normalizeVariantLabel(v) {
   return (v.variant || v.asset_name || '').toString();
 }
 
-function syncRuntimeVariantSelect() {
-  const version = $('#runtimeVersionInput').value.trim();
-  const select = $('#runtimeVariantSelect');
-  select.innerHTML = '<option value="">-- choose variant --</option>';
-  const release = _runtimeReleases.find(r => r.tag_name === version);
-  if (!release) {
-    updateRuntimeVersionHint();
-    return;
-  }
-  const variants = Array.isArray(release.windows_variants) ? release.windows_variants : [];
-  variants.forEach(v => {
-    const opt = document.createElement('option');
-    opt.value = v.asset_name || '';
-    opt.textContent = normalizeVariantLabel(v);
-    select.appendChild(opt);
-  });
-  const preferred = variants.find(v => v.variant === 'cpu') || variants[0];
-  if (preferred && preferred.asset_name) select.value = preferred.asset_name;
-  updateRuntimeVersionHint();
+function pickDefaultVariant(variants) {
+  const list = Array.isArray(variants) ? variants : [];
+  return list.find(v => String(v.variant || '').toLowerCase().includes('cuda12'))
+    || list.find(v => String(v.variant || '').toLowerCase().includes('cuda'))
+    || list[0]
+    || null;
 }
 
-function updateRuntimeVersionHint() {
-  const selectedTag = $('#runtimeVersionInput').value.trim();
-  const flags = [];
-  if (_runtimeInstalledSet.has(selectedTag)) flags.push('⬇ downloaded');
-  if (selectedTag && selectedTag === _activeRuntimeVersion) flags.push('running');
-  $('#runtimeVersionHint').textContent = selectedTag ? `${selectedTag}${flags.length ? ` — ${flags.join(' · ')}` : ''}` : '';
-}
-
-function renderRuntimeVersionPicker(releases, installed, activeTag) {
-  _runtimeReleases = releases;
-  _runtimeInstalledSet = new Set(installed.map(v => v.tag).filter(Boolean));
-  const datalist = $('#runtimeVersionList');
-  datalist.innerHTML = '';
-  releases.forEach(r => {
-    const tag = r.tag_name || '';
+function renderHeaderRuntimeSelect(installed, activeTag) {
+  const sel = $('#headerRuntimeSelect');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">-- none --</option>';
+  sel.disabled = false;
+  installed.forEach(v => {
+    const tag = v.tag || '';
     if (!tag) return;
     const opt = document.createElement('option');
     opt.value = tag;
-    const marks = [];
-    if (_runtimeInstalledSet.has(tag)) marks.push('⬇ downloaded');
-    if (tag === activeTag) marks.push('running');
-    if (marks.length) opt.label = `${tag} (${marks.join(', ')})`;
-    datalist.appendChild(opt);
+    opt.textContent = tag;
+    sel.appendChild(opt);
   });
+  const next = activeTag || current;
+  if (next && sel.querySelector(`option[value="${next}"]`)) sel.value = next;
+}
 
-  const input = $('#runtimeVersionInput');
-  if (!input.value && releases.length) input.value = releases[0].tag_name || '';
-  syncRuntimeVariantSelect();
-  updateRuntimeVersionHint();
+function clearHeaderRuntimeSelectOnError() {
+  const sel = $('#headerRuntimeSelect');
+  sel.innerHTML = '<option value="">-- none --</option>';
+  sel.value = '';
+  sel.disabled = true;
+}
+
+function renderRuntimePanels(releases, installed, activeTag) {
+  _runtimeReleases = releases;
+  _runtimeInstalledSet = new Set(installed.map(v => v.tag).filter(Boolean));
+  renderHeaderRuntimeSelect(installed, activeTag);
+  renderLatestAvailable();
+}
+
+function renderLatestAvailable() {
+  const card = $('#runtimeLatestCard');
+  const latest = _runtimeReleases[0] || null;
+  if (!latest) {
+    card.innerHTML = '<span class="text-sm">No release found.</span>';
+    return;
+  }
+  const tag = latest.tag_name || '';
+  const isInstalled = _runtimeInstalledSet.has(tag);
+  const variants = Array.isArray(latest.windows_variants) ? latest.windows_variants : [];
+  const preferred = pickDefaultVariant(variants);
+  const published = latest.published_at || 'unknown date';
+  const variantText = preferred ? normalizeVariantLabel(preferred) : 'no supported Windows variant';
+  card.innerHTML = `<strong>${esc(tag)}</strong><br><span>Published: ${esc(published)}</span><br><span>Default variant: ${esc(variantText)}</span>`;
+  if (!isInstalled && preferred && preferred.asset_name) {
+    const wrap = document.createElement('div');
+    wrap.className = 'mt-8';
+    const btn = document.createElement('button');
+    btn.className = 'btn primary small';
+    btn.type = 'button';
+    btn.textContent = 'Update';
+    btn.addEventListener('click', () => doInstallVersion(tag, preferred.asset_name));
+    wrap.appendChild(btn);
+    card.appendChild(wrap);
+  }
+}
+
+async function doSearchRuntimeVersion() {
+  const result = $('#runtimeSearchResult');
+  const tag = $('#runtimeVersionInput').value.trim();
+  result.textContent = '';
+  if (!tag) {
+    show(result, 'Enter a version tag first.', true);
+    return;
+  }
+  try {
+    const availableResp = await api('/api/versions/available');
+    const releases = availableResp.releases || [];
+    _runtimeReleases = releases;
+    const release = releases.find(r => (r.tag_name || '') === tag);
+    if (!release) {
+      show(result, `Version '${tag}' was not found on GitHub releases.`, true);
+      return;
+    }
+    renderRuntimeSearchResult(release);
+  } catch (e) {
+    show(result, e.message, true);
+  }
+}
+
+function renderRuntimeSearchResult(release) {
+  const result = $('#runtimeSearchResult');
+  const tag = release.tag_name || '';
+  const variants = Array.isArray(release.windows_variants) ? release.windows_variants : [];
+  result.innerHTML = '';
+  const header = document.createElement('div');
+  header.innerHTML = `<strong>${esc(tag)}</strong>${_runtimeInstalledSet.has(tag) ? ' <span class="running-badge">downloaded</span>' : ''}<br><span>${esc(release.published_at || '')}</span>`;
+  result.appendChild(header);
+  if (!variants.length) {
+    const noVariants = document.createElement('div');
+    noVariants.className = 'error-msg';
+    noVariants.textContent = 'No supported Windows variants for this version.';
+    result.appendChild(noVariants);
+    return;
+  }
+  const pref = pickDefaultVariant(variants);
+  variants.forEach(v => {
+    const row = document.createElement('div');
+    row.className = 'mt-8';
+    const label = `${normalizeVariantLabel(v)}${pref && pref.asset_name === v.asset_name ? ' (default)' : ''}`;
+    row.innerHTML = `<span>${esc(label)}</span>`;
+    const btn = document.createElement('button');
+    btn.className = 'btn small';
+    btn.type = 'button';
+    const assetName = (v && v.asset_name) ? String(v.asset_name) : '';
+    btn.textContent = 'Download';
+    if (!assetName) {
+      btn.disabled = true;
+      btn.title = 'No downloadable asset for this variant';
+    } else {
+      btn.addEventListener('click', () => doInstallVersion(tag, assetName));
+    }
+    row.appendChild(document.createTextNode(' '));
+    row.appendChild(btn);
+    if (!assetName) {
+      const missing = document.createElement('span');
+      missing.className = 'error-msg';
+      missing.textContent = ' Asset unavailable';
+      row.appendChild(missing);
+    }
+    result.appendChild(row);
+  });
 }
 
 function pickCurrentInstallState(installStates) {
@@ -1483,24 +1566,23 @@ async function doSetActiveVersion(tag) {
 }
 
 async function doInstallVersion(tag, assetName) {
+  if (!assetName) {
+    show($('#versionsResult'), `Missing downloadable asset for ${tag}.`, true);
+    return;
+  }
   try {
-    const payload = assetName ? { tag, asset_name: assetName } : { tag };
+    const payload = { tag, asset_name: assetName };
     const d = await api('/api/versions/install', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     show($('#versionsResult'), `Install started for ${d.tag}`, false);
     fetchVersions();
   } catch (e) { show($('#versionsResult'), e.message, true); }
 }
 
-$('#runtimeVersionInput').addEventListener('input', syncRuntimeVariantSelect);
-$('#runtimeVersionInput').addEventListener('change', syncRuntimeVariantSelect);
-$('#runtimeInstallBtn').addEventListener('click', () => {
-  const tag = $('#runtimeVersionInput').value.trim();
-  const asset = $('#runtimeVariantSelect').value;
-  if (!tag) {
-    show($('#versionsResult'), 'Select a version tag first.', true);
-    return;
-  }
-  doInstallVersion(tag, asset || undefined);
+$('#runtimeSearchBtn').addEventListener('click', doSearchRuntimeVersion);
+$('#headerRuntimeSelect').addEventListener('change', () => {
+  const tag = $('#headerRuntimeSelect').value;
+  if (!tag || tag === _activeRuntimeVersion) return;
+  doSetActiveVersion(tag);
 });
 
 async function doDeleteVersion(tag) {
