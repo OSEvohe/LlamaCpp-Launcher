@@ -1466,14 +1466,7 @@ async function doSearchRuntimeVersion() {
     return;
   }
   try {
-    const availableResp = await api('/api/versions/available');
-    const releases = availableResp.releases || [];
-    _runtimeReleases = releases;
-    const release = releases.find(r => (r.tag_name || '') === tag);
-    if (!release) {
-      show(result, `Version '${tag}' was not found on GitHub releases.`, true);
-      return;
-    }
+    const release = await api(`/api/versions/${encodeURIComponent(tag)}`);
     renderRuntimeSearchResult(release);
   } catch (e) {
     show(result, e.message, true);
