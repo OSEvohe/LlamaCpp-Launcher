@@ -165,6 +165,7 @@ input.switch:checked::after{transform:translateX(18px);background:#fff}
     <button class="tab-btn" data-tab="logs">Logs</button>
     <button class="tab-btn" data-tab="models">Models</button>
     <button class="tab-btn" data-tab="advanced">Advanced</button>
+    <button class="tab-btn" data-tab="versions">Versions</button>
     <button class="tab-btn" data-tab="monitoring">Monitoring</button>
   </div>
 
@@ -315,6 +316,21 @@ input.switch:checked::after{transform:translateX(18px);background:#fff}
   </div>
 
   <!-- ==================== MONITORING ==================== -->
+  <div class="tab-panel" id="panel-versions">
+    <div class="card">
+      <h2>Version Management</h2>
+      <div class="btn-group mb-8">
+        <button class="btn small" onclick="fetchVersions()">&#8635; Refresh</button>
+      </div>
+      <h3>Installed</h3>
+      <div id="installedVersionsList" class="text-sm">Loading…</div>
+      <h3 class="mt-12">Available (GitHub)</h3>
+      <div id="availableVersionsList" class="text-sm">Loading…</div>
+      <div id="versionsResult" class="mt-8 text-sm"></div>
+    </div>
+  </div>
+
+  <!-- ==================== MONITORING ==================== -->
   <div class="tab-panel" id="panel-monitoring">
     <div class="card">
       <h2>System Resources</h2>
@@ -416,6 +432,7 @@ $$('.tab-btn').forEach(btn => {
     if (tab === 'logs' && !logPollingActive) { startLogPolling(); }
     if (tab === 'models') fetchModels();
     if (tab === 'advanced') initAdvancedTab();
+    if (tab === 'versions') fetchVersions();
     if (tab === 'monitoring') fetchMonitoring();
   });
 });
@@ -1239,6 +1256,127 @@ async function doSaveAdvFavorites() {
     renderAdvFavorites();
     show(el, 'Favorites saved', false);
   } catch (e) { show(el, e.message, true); }
+}
+
+// ---- versions ----
+async function fetchVersions() {
+  const resultEl = $('#versionsResult');
+  resultEl.textContent = '';
+  try {
+    const installedResp = await api('/api/versions/installed');
+    const availableResp = await api('/api/versions/available');
+    const installed = installedResp.installed_versions || [];
+    const activeTag = installedResp.active_version || '';
+    const releases = availableResp.releases || [];
+
+    renderInstalledVersions(installed, activeTag);
+    renderAvailableVersions(releases);
+  } catch (e) {
+    show(resultEl, e.message, true);
+  }
+}
+
+function renderInstalledVersions(installed, activeTag) {
+  const list = $('#installedVersionsList');
+  list.innerHTML = '';
+  if (!installed.length) {
+    list.innerHTML = '<div class="text-sm">No installed versions.</div>';
+    return;
+  }
+
+  installed.forEach(v => {
+    const row = document.createElement('div');
+    row.className = 'mb-8';
+
+    const title = document.createElement('strong');
+    title.textContent = v.tag || '';
+    row.appendChild(title);
+
+    if (v.tag === activeTag) {
+      const activeBadge = document.createElement('span');
+      activeBadge.className = 'running-badge';
+      activeBadge.textContent = 'active';
+      row.appendChild(document.createTextNode(' '));
+      row.appendChild(activeBadge);
+    }
+
+    row.appendChild(document.createElement('br'));
+    const path = document.createElement('span');
+    path.className = 'text-sm';
+    path.textContent = v.executable_path || '';
+    row.appendChild(path);
+    row.appendChild(document.createElement('br'));
+
+    const setBtn = document.createElement('button');
+    setBtn.className = 'btn small';
+    setBtn.type = 'button';
+    setBtn.textContent = 'Set active';
+    setBtn.addEventListener('click', () => doSetActiveVersion(v.tag));
+    row.appendChild(setBtn);
+
+    row.appendChild(document.createTextNode(' '));
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn danger small';
+    delBtn.type = 'button';
+    delBtn.textContent = 'Delete';
+    delBtn.addEventListener('click', () => doDeleteVersion(v.tag));
+    row.appendChild(delBtn);
+
+    list.appendChild(row);
+  });
+}
+
+function renderAvailableVersions(releases) {
+  const list = $('#availableVersionsList');
+  list.innerHTML = '';
+  if (!releases.length) {
+    list.innerHTML = '<div class="text-sm">No releases available.</div>';
+    return;
+  }
+
+  releases.forEach(r => {
+    const row = document.createElement('div');
+    row.className = 'mb-8';
+
+    const title = document.createElement('strong');
+    title.textContent = r.tag_name || '';
+    row.appendChild(title);
+    row.appendChild(document.createTextNode(' '));
+
+    const installBtn = document.createElement('button');
+    installBtn.className = 'btn small';
+    installBtn.type = 'button';
+    installBtn.textContent = 'Install';
+    installBtn.addEventListener('click', () => doInstallVersion(r.tag_name));
+    row.appendChild(installBtn);
+
+    list.appendChild(row);
+  });
+}
+
+async function doSetActiveVersion(tag) {
+  try {
+    const d = await api(`/api/versions/${encodeURIComponent(tag)}/active`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+    show($('#versionsResult'), `Active version set to ${d.active_version}`, false);
+    fetchVersions();
+  } catch (e) { show($('#versionsResult'), e.message, true); }
+}
+
+async function doInstallVersion(tag) {
+  try {
+    const d = await api('/api/versions/install', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ tag }) });
+    show($('#versionsResult'), `Install started for ${d.tag}`, false);
+    fetchVersions();
+  } catch (e) { show($('#versionsResult'), e.message, true); }
+}
+
+async function doDeleteVersion(tag) {
+  try {
+    const d = await api(`/api/versions/${encodeURIComponent(tag)}`, { method: 'DELETE' });
+    show($('#versionsResult'), `Deleted ${d.uninstalled}`, false);
+    fetchVersions();
+  } catch (e) { show($('#versionsResult'), e.message, true); }
 }
 
 // ---- util ----

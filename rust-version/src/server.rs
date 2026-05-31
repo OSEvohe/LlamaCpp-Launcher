@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, RwLock};
 
-use axum::body::{to_bytes, Body};
+use axum::body::to_bytes;
 use axum::extract::{Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio::net::TcpListener;
 
@@ -75,6 +75,11 @@ pub fn app(state: SharedState) -> Router {
         .route("/api/perf/reset", post(post_perf_reset))
         .route("/api/options", get(get_options))
         .route("/api/models", get(get_models))
+        .route("/api/versions/installed", get(get_versions_installed))
+        .route("/api/versions/available", get(get_versions_available))
+        .route("/api/versions/install", post(post_versions_install))
+        .route("/api/versions/:tag/active", post(post_versions_set_active))
+        .route("/api/versions/:tag", delete(delete_versions_uninstall))
         .route(
             "/api/profiles/:index",
             get(get_profile).put(put_profile).delete(delete_profile),
@@ -185,11 +190,16 @@ async fn post_perf_reset(State(state): State<SharedState>) -> Json<Value> {
 
 async fn get_options(State(state): State<SharedState>) -> Result<Json<Value>, ApiError> {
     let service = state.read().expect("service lock poisoned");
-    let settings = service.load_global();
-    let exe_path = if settings.llama_server_path.trim().is_empty() {
-        service.default_server_path().to_string_lossy().to_string()
-    } else {
-        settings.llama_server_path
+    let exe_path = match service.resolve_active_executable() {
+        Ok(path) => path,
+        Err(_) => {
+            let settings = service.load_global();
+            if settings.llama_server_path.trim().is_empty() {
+                service.default_server_path().to_string_lossy().to_string()
+            } else {
+                settings.llama_server_path
+            }
+        }
     };
     let options = service
         .load_options(&exe_path)
@@ -202,6 +212,116 @@ async fn get_models(State(state): State<SharedState>) -> Json<Value> {
     let settings = service.load_global();
     let models = service.discover_models(&settings.model_dirs);
     Json(serde_json::json!({ "models": models }))
+}
+
+#[derive(Serialize)]
+struct InstalledVersionsResponse {
+    installed_versions: Vec<crate::models::InstalledVersion>,
+    active_version: Option<String>,
+}
+
+async fn get_versions_installed(
+    State(state): State<SharedState>,
+) -> Result<Json<InstalledVersionsResponse>, ApiError> {
+    let service = state.read().expect("service lock poisoned");
+    let settings = service.load_global();
+    Ok(Json(InstalledVersionsResponse {
+        installed_versions: service.list_installed_versions(),
+        active_version: settings.active_version,
+    }))
+}
+
+async fn get_versions_available(State(state): State<SharedState>) -> Result<Json<Value>, ApiError> {
+    let _ = state;
+    let releases = crate::versions::fetch_releases()
+        .await
+        .map_err(|err| ApiError::internal(&err.to_string()))?;
+    Ok(Json(serde_json::json!({ "releases": releases })))
+}
+
+#[derive(Deserialize)]
+struct InstallVersionRequest {
+    tag: String,
+    asset_name: Option<String>,
+}
+
+fn is_supported_windows_asset_name(asset_name: &str) -> bool {
+    asset_name.ends_with(".zip")
+        && asset_name.contains("llama-server")
+        && asset_name.contains("bin-win")
+        && !asset_name.contains("-patches")
+}
+
+async fn post_versions_install(
+    State(state): State<SharedState>,
+    request: Request,
+) -> Result<Json<Value>, ApiError> {
+    let body = parse_json_object(request, false)
+        .await?
+        .ok_or_else(|| ApiError::bad_request("missing request body"))?;
+    let req: InstallVersionRequest = serde_json::from_value(Value::Object(body))
+        .map_err(|_| ApiError::bad_request("invalid install request"))?;
+
+    if req.tag.trim().is_empty() {
+        return Err(ApiError::bad_request("tag must be a non-empty string"));
+    }
+    if let Some(asset_name) = req.asset_name.as_deref() {
+        if !is_supported_windows_asset_name(asset_name) {
+            return Err(ApiError::bad_request(&format!(
+                "unsupported asset '{}': expected Windows llama-server zip",
+                asset_name
+            )));
+        }
+    }
+
+    let releases = crate::versions::fetch_releases()
+        .await
+        .map_err(|err| ApiError::internal(&err.to_string()))?;
+    let release = releases
+        .iter()
+        .find(|r| r.tag_name == req.tag)
+        .ok_or_else(|| ApiError::not_found(&format!("release '{}' not found", req.tag)))?;
+
+    let asset = if let Some(asset_name) = req.asset_name.as_deref() {
+        release
+            .assets
+            .iter()
+            .find(|a| a.name == asset_name)
+            .cloned()
+            .ok_or_else(|| ApiError::not_found(&format!("asset '{}' not found", asset_name)))?
+    } else {
+        crate::versions::find_windows_asset(&release.assets)
+            .ok_or_else(|| ApiError::bad_request("no supported Windows llama-server asset found"))?
+    };
+
+    let service = state.read().expect("service lock poisoned");
+    service
+        .start_install_version(&req.tag, &asset)
+        .map_err(|err| ApiError::bad_request(&err))?;
+
+    Ok(Json(serde_json::json!({ "started": true, "tag": req.tag, "asset": asset.name })))
+}
+
+async fn post_versions_set_active(
+    State(state): State<SharedState>,
+    Path(tag): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let service = state.read().expect("service lock poisoned");
+    service
+        .set_active_version(&tag)
+        .map_err(|err| ApiError::bad_request(&err))?;
+    Ok(Json(serde_json::json!({ "active_version": tag })))
+}
+
+async fn delete_versions_uninstall(
+    State(state): State<SharedState>,
+    Path(tag): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let service = state.read().expect("service lock poisoned");
+    service
+        .uninstall_version(&tag)
+        .map_err(|err| ApiError::bad_request(&err))?;
+    Ok(Json(serde_json::json!({ "uninstalled": tag })))
 }
 
 fn prepare_launch_data(
@@ -249,9 +369,10 @@ fn prepare_launch_data(
     };
     let profile = &profiles[idx];
 
-    let settings = service.load_global();
     let resolved_exe = if exe_path.trim().is_empty() {
-        settings.llama_server_path
+        service
+            .resolve_active_executable()
+            .map_err(|err| ApiError::bad_request(&err))?
     } else {
         exe_path
     };

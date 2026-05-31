@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 
 use reqwest::StatusCode;
 use llama_launcher::command;
-use llama_launcher::models::{LlamaOption, Profile};
+use llama_launcher::models::{GlobalSettings, InstalledVersion, LlamaOption, Profile, VersionStatus};
 use llama_launcher::server;
 use llama_launcher::service::LlamaLauncherService;
 use reqwest::Client;
@@ -367,6 +367,152 @@ async fn settings_models_logs_unknown_route() {
     let missing = ts.client.get(format!("{}/api/nonexistent", ts.base)).send().await.expect("unknown route");
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     assert!(missing.json::<Value>().await.expect("404 json").get("error").is_some());
+}
+
+#[tokio::test]
+async fn version_endpoints_installed_set_active_delete_and_install_validation() {
+    let ts = boot_server(None).await;
+    let svc = LlamaLauncherService::new(Some(ts.app_dir.clone()));
+
+    let exe_output = std::process::Command::new("where")
+        .arg("where.exe")
+        .output()
+        .expect("find where.exe");
+    let exe_path = String::from_utf8_lossy(&exe_output.stdout)
+        .lines()
+        .next()
+        .expect("where.exe path")
+        .trim()
+        .to_string();
+
+    svc.register_installed_version(InstalledVersion {
+        tag: "b1234".into(),
+        source: "github".into(),
+        install_path: ts.app_dir.join(".launcher").join("versions").join("b1234").to_string_lossy().to_string(),
+        executable_path: exe_path,
+        status: VersionStatus::Installed,
+        installed_at: None,
+    });
+
+    let installed = ts
+        .client
+        .get(format!("{}/api/versions/installed", ts.base))
+        .send()
+        .await
+        .expect("versions installed");
+    assert_eq!(installed.status(), StatusCode::OK);
+    let installed_json: Value = installed.json().await.expect("installed json");
+    assert_eq!(installed_json["installed_versions"].as_array().expect("array").len(), 1);
+    assert!(installed_json["active_version"].is_null());
+
+    let set_active = ts
+        .client
+        .post(format!("{}/api/versions/b1234/active", ts.base))
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("set active");
+    assert_eq!(set_active.status(), StatusCode::OK);
+    assert_eq!(set_active.json::<Value>().await.expect("set active json")["active_version"], "b1234");
+
+    let delete_active = ts
+        .client
+        .delete(format!("{}/api/versions/b1234", ts.base))
+        .send()
+        .await
+        .expect("delete active");
+    assert_eq!(delete_active.status(), StatusCode::BAD_REQUEST);
+    assert!(delete_active
+        .json::<Value>()
+        .await
+        .expect("delete active json")["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("cannot uninstall active version"));
+
+    let bad_set_active = ts
+        .client
+        .post(format!("{}/api/versions/missing/active", ts.base))
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("set active missing");
+    assert_eq!(bad_set_active.status(), StatusCode::BAD_REQUEST);
+
+    let unsupported_install = ts
+        .client
+        .post(format!("{}/api/versions/install", ts.base))
+        .json(&json!({
+            "tag": "b-not-real",
+            "asset_name": "not-supported.txt"
+        }))
+        .send()
+        .await
+        .expect("unsupported install request");
+    assert_eq!(unsupported_install.status(), StatusCode::BAD_REQUEST);
+    assert!(unsupported_install
+        .json::<Value>()
+        .await
+        .expect("unsupported install json")["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("unsupported asset"));
+}
+
+#[tokio::test]
+async fn options_prefers_active_version_then_manual_path() {
+    let ts = boot_server(None).await;
+    let svc = LlamaLauncherService::new(Some(ts.app_dir.clone()));
+
+    let exe_output = std::process::Command::new("where")
+        .arg("where.exe")
+        .output()
+        .expect("find where.exe");
+    let exe_path = String::from_utf8_lossy(&exe_output.stdout)
+        .lines()
+        .next()
+        .expect("where.exe path")
+        .trim()
+        .to_string();
+
+    svc.register_installed_version(InstalledVersion {
+        tag: "b2000".into(),
+        source: "github".into(),
+        install_path: String::new(),
+        executable_path: exe_path.clone(),
+        status: VersionStatus::Installed,
+        installed_at: None,
+    });
+    svc.set_active_version("b2000").expect("set active b2000");
+
+    let active_options = ts
+        .client
+        .get(format!("{}/api/options", ts.base))
+        .send()
+        .await
+        .expect("options active");
+    assert_eq!(active_options.status(), StatusCode::OK);
+    assert!(active_options.json::<Value>().await.expect("options json").is_object());
+
+    svc.save_global(GlobalSettings {
+        llama_server_path: exe_path,
+        ..svc.load_global()
+    });
+    let settings = svc.load_global();
+    svc.unregister_installed_version("b2000");
+    svc.save_global(GlobalSettings {
+        active_version: Some("stale-tag".into()),
+        ..settings
+    });
+
+    let fallback_options = ts
+        .client
+        .get(format!("{}/api/options", ts.base))
+        .send()
+        .await
+        .expect("options fallback");
+    assert_eq!(fallback_options.status(), StatusCode::OK);
+    assert!(fallback_options.json::<Value>().await.expect("fallback options json").is_object());
 }
 
 #[test]
