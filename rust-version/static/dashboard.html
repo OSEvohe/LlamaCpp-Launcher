@@ -539,17 +539,18 @@ async function syncLoadedModel() {
     const versionBadge = _activeRuntimeVersion
       ? ` <span class="running-badge" title="Running runtime version">runtime ${esc(_activeRuntimeVersion)}</span>`
       : '';
-    if (!path) {
-      el.innerHTML = versionBadge ? `Model: —${versionBadge}` : '';
-      return;
+    let profileName = '—';
+    if (path && _profilesCache.length) {
+      const idx = resolveRunningProfileIdx(_profilesCache, path);
+      if (idx !== _runningProfileIdx) {
+        _runningProfileIdx = idx;
+        fetchProfiles();
+      }
+      if (idx >= 0) {
+        profileName = _profilesCache[idx].name || '—';
+      }
     }
-    el.innerHTML = `Model: <span class="model-path" title="${esc(path)}">${esc(path)}</span>${versionBadge}`;
-    if (!_profilesCache.length) return;
-    const idx = resolveRunningProfileIdx(_profilesCache, path);
-    if (idx !== _runningProfileIdx) {
-      _runningProfileIdx = idx;
-      fetchProfiles();
-    }
+    el.innerHTML = `Profile: <span class="model-path" title="${path ? esc(path) : ''}">${esc(profileName)}</span>${versionBadge}`;
   } catch (_e) { /* silent: model may not be loaded yet */ }
 }
 
