@@ -232,6 +232,8 @@ async fn get_models(State(state): State<SharedState>) -> Json<Value> {
 struct InstalledVersionsResponse {
     installed_versions: Vec<crate::models::InstalledVersion>,
     active_version: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    install_states: HashMap<String, crate::models::InstallState>,
 }
 
 async fn get_versions_installed(
@@ -242,6 +244,7 @@ async fn get_versions_installed(
     Ok(Json(InstalledVersionsResponse {
         installed_versions: service.list_installed_versions(),
         active_version: settings.active_version,
+        install_states: settings.install_states,
     }))
 }
 
