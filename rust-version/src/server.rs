@@ -246,10 +246,16 @@ struct InstallVersionRequest {
 }
 
 fn is_supported_windows_asset_name(asset_name: &str) -> bool {
-    asset_name.ends_with(".zip")
-        && asset_name.contains("llama-server")
-        && asset_name.contains("bin-win")
-        && !asset_name.contains("-patches")
+    let name = asset_name.to_ascii_lowercase();
+    let has_windows_token = name.split(|c: char| !c.is_ascii_alphanumeric()).any(|token| {
+        token == "windows" || token == "win" || (token.starts_with("win") && token != "darwin")
+    });
+    name.ends_with(".zip")
+        && name.contains("llama-server")
+        && has_windows_token
+        && !name.contains("-patches")
+        && !name.contains("linux")
+        && !name.contains("macos")
 }
 
 async fn post_versions_install(
@@ -930,6 +936,32 @@ mod tests {
         assert_eq!(reset_body.get("reset").and_then(|v| v.as_bool()), Some(true));
 
         handle.abort();
+    }
+
+    #[test]
+    fn test_supported_windows_asset_alternate_naming() {
+        // Alternate naming without "bin-win" must be accepted
+        assert!(is_supported_windows_asset_name("llama-server-b3594-bin-windows-ssl.zip"));
+        assert!(is_supported_windows_asset_name("llama-server-b3600-win-x64.zip"));
+        assert!(is_supported_windows_asset_name("llama-server-b3700-windows-cuda.zip"));
+    }
+
+    #[test]
+    fn test_supported_windows_asset_rejects_non_server_and_patches() {
+        // Patch asset — rejected
+        assert!(!is_supported_windows_asset_name("llama-server-b3594-bin-win-patches.zip"));
+        // Linux — rejected
+        assert!(!is_supported_windows_asset_name("llama-server-b3594-linux-avx.zip"));
+        // macOS — rejected
+        assert!(!is_supported_windows_asset_name("llama-server-b3594-macos-arm64.zip"));
+        // Non-server — rejected
+        assert!(!is_supported_windows_asset_name("llama-cli-b3594-bin-win.zip"));
+        // Not a zip — rejected
+        assert!(!is_supported_windows_asset_name("llama-server-b3594-bin-win.tar.gz"));
+        // Missing Windows token — rejected
+        assert!(!is_supported_windows_asset_name("llama-server-b3594-bin-avx2.zip"));
+        // darwin must not match via "win" substring
+        assert!(!is_supported_windows_asset_name("llama-server-b3594-darwin-arm64.zip"));
     }
 
     #[test]

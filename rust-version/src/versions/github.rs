@@ -146,28 +146,40 @@ pub async fn fetch_releases() -> Result<Vec<GitHubRelease>, GitHubError> {
 ///
 /// Prefers plain (CPU) builds over CUDA builds.
 pub fn find_windows_asset(assets: &[GitHubReleaseAsset]) -> Option<GitHubReleaseAsset> {
+    let is_windows_server = |a: &&GitHubReleaseAsset| -> bool {
+        let name = a.name.to_ascii_lowercase();
+        let has_windows_token = name.split(|c: char| !c.is_ascii_alphanumeric()).any(|token| {
+            token == "windows" || token == "win" || (token.starts_with("win") && token != "darwin")
+        });
+        name.ends_with(".zip")
+            && name.contains("llama-server")
+            && has_windows_token
+            && !name.contains("-patches")
+            && !name.contains("linux")
+            && !name.contains("macos")
+    };
+
     // First pass: prefer non-CUDA (CPU) builds
     let cpu_asset = assets
         .iter()
-        .filter(|a| a.name.ends_with(".zip"))
-        .filter(|a| a.name.contains("llama-server"))
-        .filter(|a| a.name.contains("bin-win"))
-        .filter(|a| !a.name.contains("cuda") && !a.name.contains("vulkan") && !a.name.contains("rocm"))
-        .find(|a| !a.name.contains("-patches"))
-        .cloned();
+        .filter(is_windows_server)
+        .filter(|a| {
+            let name = a.name.to_ascii_lowercase();
+            !name.contains("cuda") && !name.contains("vulkan") && !name.contains("rocm")
+        })
+        .cloned()
+        .next();
 
     if cpu_asset.is_some() {
         return cpu_asset;
     }
 
-    // Fallback: any bin-win zip with llama-server
+    // Fallback: any Windows llama-server zip
     assets
         .iter()
-        .filter(|a| a.name.ends_with(".zip"))
-        .filter(|a| a.name.contains("llama-server"))
-        .filter(|a| a.name.contains("bin-win"))
-        .find(|a| !a.name.contains("-patches"))
+        .filter(is_windows_server)
         .cloned()
+        .next()
 }
 
 /// Check whether a release tag looks like a valid llama.cpp release.
@@ -242,6 +254,26 @@ mod tests {
     }
 
     #[test]
+    fn test_find_windows_asset_prefers_cpu_with_uppercase_accelerator_token() {
+        let assets = vec![
+            GitHubReleaseAsset {
+                name: "llama-server-b3594-bin-win-CUDA-master.zip".into(),
+                size_bytes: 50_000_000,
+                download_url: "https://example.com/cuda-upper.zip".into(),
+            },
+            GitHubReleaseAsset {
+                name: "llama-server-b3594-bin-win-ssl.zip".into(),
+                size_bytes: 20_000_000,
+                download_url: "https://example.com/cpu.zip".into(),
+            },
+        ];
+
+        let asset = find_windows_asset(&assets);
+        assert!(asset.is_some());
+        assert!(asset.unwrap().name.contains("ssl"));
+    }
+
+    #[test]
     fn test_find_windows_asset_no_match() {
         let assets = vec![
             GitHubReleaseAsset {
@@ -250,6 +282,84 @@ mod tests {
                 download_url: "https://example.com/cli.zip".into(),
             },
         ];
+        let asset = find_windows_asset(&assets);
+        assert!(asset.is_none());
+    }
+
+    #[test]
+    fn test_find_windows_asset_alternate_naming_accepted() {
+        let assets = vec![
+            // Alternate Windows naming without "bin-win"
+            GitHubReleaseAsset {
+                name: "llama-server-b3594-bin-windows-ssl.zip".into(),
+                size_bytes: 20_000_000,
+                download_url: "https://example.com/win-ssl.zip".into(),
+            },
+            // Another alternate: win-x64 style
+            GitHubReleaseAsset {
+                name: "llama-server-b3600-win-x64.zip".into(),
+                size_bytes: 22_000_000,
+                download_url: "https://example.com/win-x64.zip".into(),
+            },
+        ];
+        // Should find the first CPU alternate-named asset
+        let asset = find_windows_asset(&assets);
+        assert!(asset.is_some());
+        assert!(asset.unwrap().name.contains("bin-windows"));
+    }
+
+    #[test]
+    fn test_find_windows_asset_rejects_non_server_and_patches() {
+        let assets = vec![
+            // Patch asset — must be rejected
+            GitHubReleaseAsset {
+                name: "llama-server-b3594-bin-win-patches.zip".into(),
+                size_bytes: 5_000_000,
+                download_url: "https://example.com/patches.zip".into(),
+            },
+            // Linux asset — must be rejected
+            GitHubReleaseAsset {
+                name: "llama-server-b3594-linux-avx.zip".into(),
+                size_bytes: 15_000_000,
+                download_url: "https://example.com/linux.zip".into(),
+            },
+            // macOS asset — must be rejected
+            GitHubReleaseAsset {
+                name: "llama-server-b3594-macos-arm64.zip".into(),
+                size_bytes: 18_000_000,
+                download_url: "https://example.com/macos.zip".into(),
+            },
+            // Non-server (llama-cli) — must be rejected
+            GitHubReleaseAsset {
+                name: "llama-cli-b3594-bin-win.zip".into(),
+                size_bytes: 10_000_000,
+                download_url: "https://example.com/cli.zip".into(),
+            },
+        ];
+        let asset = find_windows_asset(&assets);
+        assert!(asset.is_none());
+    }
+
+    #[test]
+    fn test_find_windows_asset_requires_windows_token() {
+        let assets = vec![GitHubReleaseAsset {
+            name: "llama-server-b3594-bin-avx2.zip".into(),
+            size_bytes: 10_000_000,
+            download_url: "https://example.com/unknown-os.zip".into(),
+        }];
+
+        let asset = find_windows_asset(&assets);
+        assert!(asset.is_none());
+    }
+
+    #[test]
+    fn test_find_windows_asset_rejects_darwin() {
+        let assets = vec![GitHubReleaseAsset {
+            name: "llama-server-b3594-darwin-arm64.zip".into(),
+            size_bytes: 10_000_000,
+            download_url: "https://example.com/darwin.zip".into(),
+        }];
+
         let asset = find_windows_asset(&assets);
         assert!(asset.is_none());
     }
