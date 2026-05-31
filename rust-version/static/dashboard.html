@@ -244,10 +244,6 @@ input.switch:checked::after{transform:translateX(18px);background:#fff}
     <div class="card">
       <h2>Global Settings</h2>
       <div class="form-row">
-        <label>llama-server.exe Path</label>
-        <input id="gsLlamaPath" type="text">
-      </div>
-      <div class="form-row">
         <label>Model Directories (comma-separated)</label>
         <input id="gsModelDirs" type="text">
       </div>
@@ -839,7 +835,6 @@ async function doDuplicateProfile() {
 async function fetchSettings() {
   try {
     const d = await api('/api/settings');
-    $('#gsLlamaPath').value = d.llama_server_path || '';
     $('#gsModelDirs').value = (d.model_dirs || []).join(', ');
     $('#gsApiHost').value = d.api_host || '127.0.0.1';
     $('#gsApiPort').value = d.api_port || 0;
@@ -852,7 +847,6 @@ async function doSaveSettings() {
   const el = $('#gsResult');
   el.textContent = '';
   const body = {
-    llama_server_path: $('#gsLlamaPath').value.trim(),
     model_dirs: $('#gsModelDirs').value.split(',').map(s => s.trim()).filter(Boolean),
     api_host: $('#gsApiHost').value.trim() || '127.0.0.1',
     api_port: parseInt($('#gsApiPort').value, 10) || 0,
