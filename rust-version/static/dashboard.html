@@ -106,10 +106,14 @@ tr:hover td{background:#161b22}
 .mb-8{margin-bottom:8px}
 .text-sm{font-size:12px;color:#8b949e}
 #loadedModel .model-path{font-family:"Cascadia Code","Fira Code",monospace;font-size:11px;color:#58a6ff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:500px;display:inline-block}
+#loadedModel .running-badge{margin-left:8px;vertical-align:middle}
 .text-center{text-align:center}
 .loading{color:#58a6ff;font-style:italic}
 .error-msg{color:#f85149;font-size:12px;margin-top:4px}
 .footer{margin-top:16px;padding-top:12px;border-top:1px solid #30363d;text-align:right}
+.progress-wrap{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px}
+.progress-track{width:100%;height:10px;background:#21262d;border-radius:999px;overflow:hidden}
+.progress-fill{height:100%;background:#1f6feb;width:0;transition:width .2s}
 
 /* ---- advanced panel ---- */
 .adv-scroll{max-height:340px;overflow-y:auto;border:1px solid #30363d;border-radius:4px;padding:6px 0}
@@ -166,7 +170,7 @@ input.switch:checked::after{transform:translateX(18px);background:#fff}
     <button class="tab-btn" data-tab="logs">Logs</button>
     <button class="tab-btn" data-tab="models">Models</button>
     <button class="tab-btn" data-tab="advanced">Advanced</button>
-    <button class="tab-btn" data-tab="versions">Versions</button>
+    <button class="tab-btn" data-tab="versions">Llama runtime</button>
     <button class="tab-btn" data-tab="monitoring">Monitoring</button>
   </div>
 
@@ -315,14 +319,32 @@ input.switch:checked::after{transform:translateX(18px);background:#fff}
   <!-- ==================== MONITORING ==================== -->
   <div class="tab-panel" id="panel-versions">
     <div class="card">
-      <h2>Version Management</h2>
+      <h2>Llama Runtime</h2>
       <div class="btn-group mb-8">
         <button class="btn small" onclick="fetchVersions()">&#8635; Refresh</button>
       </div>
+      <div class="form-grid">
+        <div class="form-row">
+          <label>Version</label>
+          <input id="runtimeVersionInput" type="text" list="runtimeVersionList" placeholder="Search version tag...">
+          <datalist id="runtimeVersionList"></datalist>
+          <div id="runtimeVersionHint" class="text-sm mt-8"></div>
+        </div>
+        <div class="form-row">
+          <label>Variant</label>
+          <select id="runtimeVariantSelect"><option value="">-- choose variant --</option></select>
+        </div>
+      </div>
+      <div class="btn-group mb-8">
+        <button class="btn small" id="runtimeInstallBtn" type="button">Install selected</button>
+      </div>
+      <div id="runtimeInstallProgress" class="progress-wrap mb-8" style="display:none">
+        <div id="runtimeInstallPhase" class="text-sm mb-8"></div>
+        <div class="progress-track"><div id="runtimeInstallFill" class="progress-fill"></div></div>
+        <div id="runtimeInstallPercent" class="text-sm mt-8"></div>
+      </div>
       <h3>Installed</h3>
       <div id="installedVersionsList" class="text-sm">Loading…</div>
-      <h3 class="mt-12">Available (GitHub)</h3>
-      <div id="availableVersionsList" class="text-sm">Loading…</div>
       <div id="versionsResult" class="mt-8 text-sm"></div>
     </div>
   </div>
@@ -394,6 +416,9 @@ let selectedProfileUid = '';
 let _modelPathReqId = 0;
 let _modelPathLoading = false;
 let _runningProfileIdx = -1;
+let _activeRuntimeVersion = '';
+let _runtimeReleases = [];
+let _runtimeInstalledSet = new Set();
 
 function resolveRunningProfileIdx(profiles, loadedModelPath) {
   if (!Array.isArray(profiles) || !profiles.length || !loadedModelPath) return -1;
@@ -431,7 +456,8 @@ $$('.tab-btn').forEach(btn => {
     if (tab === 'logs' && !logPollingActive) { startLogPolling(); }
     if (tab === 'models') fetchModels();
     if (tab === 'advanced') initAdvancedTab();
-    if (tab === 'versions') fetchVersions();
+    if (tab === 'versions') startVersionsPolling();
+    else stopVersionsPolling();
     if (tab === 'monitoring') fetchMonitoring();
   });
 });
@@ -496,11 +522,14 @@ async function syncLoadedModel() {
     const d = await api('/api/perf');
     const path = d && d.loaded_model_path;
     const el = $('#loadedModel');
+    const versionBadge = _activeRuntimeVersion
+      ? ` <span class="running-badge" title="Running runtime version">runtime ${esc(_activeRuntimeVersion)}</span>`
+      : '';
     if (!path) {
-      el.textContent = '';
+      el.innerHTML = versionBadge ? `Model: —${versionBadge}` : '';
       return;
     }
-    el.innerHTML = `Model: <span class="model-path" title="${esc(path)}">${esc(path)}</span>`;
+    el.innerHTML = `Model: <span class="model-path" title="${esc(path)}">${esc(path)}</span>${versionBadge}`;
     if (!_profilesCache.length) return;
     const idx = resolveRunningProfileIdx(_profilesCache, path);
     if (idx !== _runningProfileIdx) {
@@ -862,6 +891,10 @@ let logLastSize = 0;
 let logLastMarker = '';
 let logPollingActive = false;
 let logPollTimer = null;
+let versionsPollingActive = false;
+let versionsPollTimer = null;
+let versionsFetchInFlight = false;
+let versionsFetchQueued = false;
 
 async function fetchLogs() {
   const qs = new URLSearchParams();
@@ -1257,6 +1290,12 @@ async function doSaveAdvFavorites() {
 
 // ---- versions ----
 async function fetchVersions() {
+  if (versionsFetchInFlight) {
+    versionsFetchQueued = true;
+    return;
+  }
+  versionsFetchInFlight = true;
+  versionsFetchQueued = false;
   const resultEl = $('#versionsResult');
   resultEl.textContent = '';
   try {
@@ -1265,12 +1304,33 @@ async function fetchVersions() {
     const installed = installedResp.installed_versions || [];
     const activeTag = installedResp.active_version || '';
     const releases = availableResp.releases || [];
+    _activeRuntimeVersion = activeTag;
 
     renderInstalledVersions(installed, activeTag);
-    renderAvailableVersions(releases);
+    renderRuntimeVersionPicker(releases, installed, activeTag);
+    renderInstallProgress(installedResp.install_states || null);
+    syncLoadedModel();
   } catch (e) {
     show(resultEl, e.message, true);
+  } finally {
+    versionsFetchInFlight = false;
+    if (versionsFetchQueued) {
+      versionsFetchQueued = false;
+      fetchVersions();
+    }
   }
+}
+
+function startVersionsPolling() {
+  if (versionsPollingActive) return;
+  versionsPollingActive = true;
+  fetchVersions();
+  versionsPollTimer = setInterval(fetchVersions, 4000);
+}
+
+function stopVersionsPolling() {
+  versionsPollingActive = false;
+  if (versionsPollTimer) { clearInterval(versionsPollTimer); versionsPollTimer = null; }
 }
 
 function renderInstalledVersions(installed, activeTag) {
@@ -1292,7 +1352,7 @@ function renderInstalledVersions(installed, activeTag) {
     if (v.tag === activeTag) {
       const activeBadge = document.createElement('span');
       activeBadge.className = 'running-badge';
-      activeBadge.textContent = 'active';
+      activeBadge.textContent = 'running';
       row.appendChild(document.createTextNode(' '));
       row.appendChild(activeBadge);
     }
@@ -1324,56 +1384,94 @@ function renderInstalledVersions(installed, activeTag) {
   });
 }
 
-function renderAvailableVersions(releases) {
-  const list = $('#availableVersionsList');
-  list.innerHTML = '';
-  if (!releases.length) {
-    list.innerHTML = '<div class="text-sm">No releases available.</div>';
+function normalizeVariantLabel(v) {
+  if (!v) return '';
+  return (v.variant || v.asset_name || '').toString();
+}
+
+function syncRuntimeVariantSelect() {
+  const version = $('#runtimeVersionInput').value.trim();
+  const select = $('#runtimeVariantSelect');
+  select.innerHTML = '<option value="">-- choose variant --</option>';
+  const release = _runtimeReleases.find(r => r.tag_name === version);
+  if (!release) {
+    updateRuntimeVersionHint();
     return;
   }
-
-  releases.forEach(r => {
-    const row = document.createElement('div');
-    row.className = 'mb-8';
-
-    const title = document.createElement('strong');
-    title.textContent = r.tag_name || '';
-    row.appendChild(title);
-    row.appendChild(document.createTextNode(' '));
-
-    const installBtn = document.createElement('button');
-    installBtn.className = 'btn small';
-    installBtn.type = 'button';
-    const variants = Array.isArray(r.windows_variants) ? r.windows_variants : [];
-    const preferred = variants.find(v => v.variant === 'cpu') || variants[0] || null;
-    installBtn.textContent = preferred ? `Install ${preferred.variant.toUpperCase()}` : 'Install';
-    installBtn.disabled = !preferred;
-    installBtn.onclick = () => {
-      if (preferred) doInstallVersion(r.tag_name, preferred.asset_name);
-    };
-    row.appendChild(installBtn);
-
-    if (variants.length > 1) {
-      row.appendChild(document.createTextNode(' '));
-      const select = document.createElement('select');
-      select.className = 'small';
-      variants.forEach(v => {
-        const opt = document.createElement('option');
-        opt.value = v.asset_name;
-        opt.textContent = v.asset_name || v.variant.toUpperCase();
-        if (v.asset_name === preferred.asset_name) opt.selected = true;
-        select.appendChild(opt);
-      });
-      select.addEventListener('change', () => {
-        const variant = variants.find(v => v.asset_name === select.value);
-        installBtn.textContent = variant ? `Install ${variant.variant.toUpperCase()}` : 'Install';
-      });
-      row.appendChild(select);
-      installBtn.onclick = () => doInstallVersion(r.tag_name, select.value);
-    }
-
-    list.appendChild(row);
+  const variants = Array.isArray(release.windows_variants) ? release.windows_variants : [];
+  variants.forEach(v => {
+    const opt = document.createElement('option');
+    opt.value = v.asset_name || '';
+    opt.textContent = normalizeVariantLabel(v);
+    select.appendChild(opt);
   });
+  const preferred = variants.find(v => v.variant === 'cpu') || variants[0];
+  if (preferred && preferred.asset_name) select.value = preferred.asset_name;
+  updateRuntimeVersionHint();
+}
+
+function updateRuntimeVersionHint() {
+  const selectedTag = $('#runtimeVersionInput').value.trim();
+  const flags = [];
+  if (_runtimeInstalledSet.has(selectedTag)) flags.push('⬇ downloaded');
+  if (selectedTag && selectedTag === _activeRuntimeVersion) flags.push('running');
+  $('#runtimeVersionHint').textContent = selectedTag ? `${selectedTag}${flags.length ? ` — ${flags.join(' · ')}` : ''}` : '';
+}
+
+function renderRuntimeVersionPicker(releases, installed, activeTag) {
+  _runtimeReleases = releases;
+  _runtimeInstalledSet = new Set(installed.map(v => v.tag).filter(Boolean));
+  const datalist = $('#runtimeVersionList');
+  datalist.innerHTML = '';
+  releases.forEach(r => {
+    const tag = r.tag_name || '';
+    if (!tag) return;
+    const opt = document.createElement('option');
+    opt.value = tag;
+    const marks = [];
+    if (_runtimeInstalledSet.has(tag)) marks.push('⬇ downloaded');
+    if (tag === activeTag) marks.push('running');
+    if (marks.length) opt.label = `${tag} (${marks.join(', ')})`;
+    datalist.appendChild(opt);
+  });
+
+  const input = $('#runtimeVersionInput');
+  if (!input.value && releases.length) input.value = releases[0].tag_name || '';
+  syncRuntimeVariantSelect();
+  updateRuntimeVersionHint();
+}
+
+function pickCurrentInstallState(installStates) {
+  if (!installStates || typeof installStates !== 'object') return null;
+  const active = _activeRuntimeVersion && installStates[_activeRuntimeVersion];
+  if (active && active.phase && active.phase !== 'idle' && active.phase !== 'done') return active;
+  for (const state of Object.values(installStates)) {
+    if (!state || !state.phase) continue;
+    if (state.phase !== 'idle' && state.phase !== 'done') return state;
+  }
+  return null;
+}
+
+function renderInstallProgress(installStates) {
+  const installState = pickCurrentInstallState(installStates);
+  const box = $('#runtimeInstallProgress');
+  if (!installState) {
+    box.style.display = 'none';
+    $('#runtimeInstallPhase').textContent = '';
+    $('#runtimeInstallFill').style.width = '0%';
+    $('#runtimeInstallPercent').textContent = '';
+    return;
+  }
+  box.style.display = 'block';
+  const phase = installState.phase || 'installing';
+  const downloaded = Number(installState.downloaded_bytes || 0);
+  const total = Number(installState.total_bytes || 0);
+  const percent = total > 0 ? Math.min(100, Math.max(0, (downloaded / total) * 100)) : null;
+  $('#runtimeInstallPhase').textContent = `Phase: ${phase}`;
+  $('#runtimeInstallFill').style.width = percent == null ? '0%' : `${percent.toFixed(1)}%`;
+  $('#runtimeInstallPercent').textContent = percent == null
+    ? 'Progress: pending size info'
+    : `Progress: ${percent.toFixed(1)}% (${downloaded} / ${total} bytes)`;
 }
 
 async function doSetActiveVersion(tag) {
@@ -1392,6 +1490,18 @@ async function doInstallVersion(tag, assetName) {
     fetchVersions();
   } catch (e) { show($('#versionsResult'), e.message, true); }
 }
+
+$('#runtimeVersionInput').addEventListener('input', syncRuntimeVariantSelect);
+$('#runtimeVersionInput').addEventListener('change', syncRuntimeVariantSelect);
+$('#runtimeInstallBtn').addEventListener('click', () => {
+  const tag = $('#runtimeVersionInput').value.trim();
+  const asset = $('#runtimeVariantSelect').value;
+  if (!tag) {
+    show($('#versionsResult'), 'Select a version tag first.', true);
+    return;
+  }
+  doInstallVersion(tag, asset || undefined);
+});
 
 async function doDeleteVersion(tag) {
   try {
@@ -1415,6 +1525,7 @@ setInterval(updateStatusBadge, 5000);
 setInterval(fetchMonitoring, 8000);
 fetchMonitoring();
 fetchProfiles().finally(function() { syncLoadedModel(); });
+fetchVersions();
 </script>
 </body>
 </html>
