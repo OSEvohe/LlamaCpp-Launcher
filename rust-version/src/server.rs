@@ -111,8 +111,22 @@ async fn not_found() -> ApiError {
     ApiError::not_found("not found")
 }
 
-async fn get_dashboard() -> Html<&'static str> {
-    Html(include_str!("../static/dashboard.html"))
+const DASHBOARD_TEMPLATE: &str = include_str!("../static/dashboard.html");
+const DASHBOARD_VERSION_PLACEHOLDER: &str = "__APP_VERSION__";
+
+fn app_version() -> &'static str {
+    match option_env!("LLAMA_LAUNCHER_GIT_COMMIT") {
+        Some(v) => v,
+        None => "unknown",
+    }
+}
+
+fn render_dashboard_html() -> String {
+    DASHBOARD_TEMPLATE.replace(DASHBOARD_VERSION_PLACEHOLDER, app_version())
+}
+
+async fn get_dashboard() -> Html<String> {
+    Html(render_dashboard_html())
 }
 
 async fn get_profiles(State(state): State<SharedState>) -> Json<Vec<Profile>> {
@@ -962,6 +976,25 @@ mod tests {
         assert!(!is_supported_windows_asset_name("llama-server-b3594-bin-avx2.zip"));
         // darwin must not match via "win" substring
         assert!(!is_supported_windows_asset_name("llama-server-b3594-darwin-arm64.zip"));
+    }
+
+    #[tokio::test]
+    async fn dashboard_shows_version_and_not_placeholder() {
+        let (base, _state, handle) = spawn_server().await;
+        let client = Client::new();
+
+        let response = client
+            .get(format!("{}/", base))
+            .send()
+            .await
+            .expect("get dashboard");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.text().await.expect("read dashboard body");
+        assert!(body.contains("Version: "));
+        assert!(!body.contains(DASHBOARD_VERSION_PLACEHOLDER));
+
+        handle.abort();
     }
 
     #[test]
