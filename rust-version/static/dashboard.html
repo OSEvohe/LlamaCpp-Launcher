@@ -108,7 +108,7 @@ tr:hover td{background:#161b22}
 .mt-16{margin-top:16px}
 .mb-8{margin-bottom:8px}
 .text-sm{font-size:12px;color:#8b949e}
-#loadedModel .model-path{font-family:"Cascadia Code","Fira Code",monospace;font-size:11px;color:#58a6ff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:500px;display:inline-block}
+#loadedModel .profile-name{font-family:"Cascadia Code","Fira Code",monospace;font-size:11px;color:#58a6ff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:500px;display:inline-block;vertical-align:bottom}
 #loadedModel .running-badge{margin-left:8px;vertical-align:middle}
 .text-center{text-align:center}
 .loading{color:#58a6ff;font-style:italic}
@@ -539,18 +539,17 @@ async function syncLoadedModel() {
     const versionBadge = _activeRuntimeVersion
       ? ` <span class="running-badge" title="Running runtime version">runtime ${esc(_activeRuntimeVersion)}</span>`
       : '';
-    let profileName = '—';
-    if (path && _profilesCache.length) {
-      const idx = resolveRunningProfileIdx(_profilesCache, path);
-      if (idx !== _runningProfileIdx) {
-        _runningProfileIdx = idx;
-        fetchProfiles();
-      }
-      if (idx >= 0) {
-        profileName = _profilesCache[idx].name || '—';
-      }
+    const idx = (_profilesCache.length && path)
+      ? resolveRunningProfileIdx(_profilesCache, path)
+      : -1;
+    const runningName = (idx >= 0 && _profilesCache[idx] && _profilesCache[idx].name)
+      ? _profilesCache[idx].name
+      : '—';
+    el.innerHTML = `Profile: <span class="profile-name" title="${esc(runningName)}">${esc(runningName)}</span>${versionBadge}`;
+    if (idx !== _runningProfileIdx) {
+      _runningProfileIdx = idx;
+      fetchProfiles();
     }
-    el.innerHTML = `Profile: <span class="model-path" title="${path ? esc(path) : ''}">${esc(profileName)}</span>${versionBadge}`;
   } catch (_e) { /* silent: model may not be loaded yet */ }
 }
 
