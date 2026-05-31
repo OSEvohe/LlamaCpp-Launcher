@@ -6,7 +6,7 @@ use axum::body::to_bytes;
 use axum::extract::{Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -79,7 +79,7 @@ pub fn app(state: SharedState) -> Router {
         .route("/api/versions/available", get(get_versions_available))
         .route("/api/versions/install", post(post_versions_install))
         .route("/api/versions/:tag/active", post(post_versions_set_active))
-        .route("/api/versions/:tag", delete(delete_versions_uninstall))
+        .route("/api/versions/:tag", get(get_versions_by_tag).delete(delete_versions_uninstall))
         .route(
             "/api/profiles/:index",
             get(get_profile).put(put_profile).delete(delete_profile),
@@ -259,6 +259,26 @@ async fn get_versions_available(State(state): State<SharedState>) -> Result<Json
     Ok(Json(serde_json::json!({ "releases": available })))
 }
 
+async fn get_versions_by_tag(Path(tag): Path<String>) -> Result<Json<Value>, ApiError> {
+    if tag.trim().is_empty() {
+        return Err(ApiError::bad_request("tag must be a non-empty string"));
+    }
+
+    let release = crate::versions::fetch_release_by_tag(&tag).await.map_err(|err| match err {
+        crate::versions::GitHubError::HttpError { status: 404, .. } => {
+            ApiError::not_found(&format!("release '{}' not found on GitHub", tag))
+        }
+        _ => ApiError::internal(&err.to_string()),
+    })?;
+
+    let available = map_available_releases(vec![release]);
+    let release = available.into_iter().next().ok_or_else(|| {
+        ApiError::internal("failed to map release payload")
+    })?;
+
+    Ok(Json(serde_json::to_value(release).expect("serialize release")))
+}
+
 #[derive(Serialize)]
 struct AvailableWindowsVariant {
     asset_name: String,
@@ -329,13 +349,14 @@ async fn post_versions_install(
         }
     }
 
-    let releases = crate::versions::fetch_releases()
+    let release = crate::versions::fetch_release_by_tag(&req.tag)
         .await
-        .map_err(|err| ApiError::internal(&err.to_string()))?;
-    let release = releases
-        .iter()
-        .find(|r| r.tag_name == req.tag)
-        .ok_or_else(|| ApiError::not_found(&format!("release '{}' not found", req.tag)))?;
+        .map_err(|err| match err {
+            crate::versions::GitHubError::HttpError { status: 404, .. } => {
+                ApiError::not_found(&format!("release '{}' not found on GitHub", req.tag))
+            }
+            _ => ApiError::internal(&err.to_string()),
+        })?;
 
     let asset = if let Some(asset_name) = req.asset_name.as_deref() {
         release
@@ -1040,6 +1061,15 @@ mod tests {
         assert_eq!(release["windows_asset"]["name"], "llama-b1000-bin-win-cpu-x64.zip");
         assert_eq!(release["windows_asset"]["size"], 10);
         assert_eq!(release["windows_variants"].as_array().map(|v| v.len()), Some(2));
+    }
+
+    #[tokio::test]
+    async fn versions_by_tag_rejects_empty_tag() {
+        let err = get_versions_by_tag(Path(String::new()))
+            .await
+            .expect_err("empty tag should be rejected");
+        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(err.message, "tag must be a non-empty string");
     }
 
     #[tokio::test]

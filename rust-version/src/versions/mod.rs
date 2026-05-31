@@ -11,6 +11,7 @@ pub mod installer;
 // Re-exports
 pub use github::{
     classify_windows_variant,
+    fetch_release_by_tag,
     fetch_releases,
     find_windows_asset,
     is_supported_windows_asset_name,

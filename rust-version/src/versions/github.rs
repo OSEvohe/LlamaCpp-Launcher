@@ -10,6 +10,7 @@ use reqwest::header::{ACCEPT, USER_AGENT};
 use crate::models::{GitHubRelease, GitHubReleaseAsset};
 
 const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/ggerganov/llama.cpp/releases";
+const GITHUB_RELEASES_TAG_URL_PREFIX: &str = "https://api.github.com/repos/ggerganov/llama.cpp/releases/tags/";
 const CACHE_TTL_SECS: u64 = 300; // 5 minutes
 
 // ---------------------------------------------------------------------------
@@ -139,6 +140,46 @@ pub async fn fetch_releases() -> Result<Vec<GitHubRelease>, GitHubError> {
     }
 
     Ok(releases)
+}
+
+/// Fetch one exact llama.cpp release by GitHub tag.
+pub async fn fetch_release_by_tag(tag: &str) -> Result<GitHubRelease, GitHubError> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| GitHubError::Request(e.to_string()))?;
+
+    let resp = client
+        .get(format!("{}{}", GITHUB_RELEASES_TAG_URL_PREFIX, tag))
+        .header(USER_AGENT, "LLama-Launcher/0.1")
+        .header(ACCEPT, "application/vnd.github.v3+json")
+        .send()
+        .await
+        .map_err(|e| GitHubError::Request(e.to_string()))?;
+
+    let status_code = resp.status();
+    let status = status_code.as_u16();
+    let headers = resp.headers().clone();
+    let body = resp.text().await.map_err(|e| GitHubError::Request(e.to_string()))?;
+
+    if status == 403 {
+        if let Some(reset) = headers
+            .get("X-RateLimit-Reset")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            return Err(GitHubError::RateLimit { reset_at: reset });
+        }
+    }
+
+    if !status_code.is_success() {
+        return Err(GitHubError::HttpError {
+            status,
+            body: body.truncate(500),
+        });
+    }
+
+    serde_json::from_str(&body).map_err(|e| GitHubError::Parse(e.to_string()))
 }
 
 /// Check whether an asset name looks like a supported Windows llama.cpp binary zip.
