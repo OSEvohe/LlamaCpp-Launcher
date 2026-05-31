@@ -1366,7 +1366,7 @@ function renderAvailableVersions(releases) {
       variants.forEach(v => {
         const opt = document.createElement('option');
         opt.value = v.asset_name;
-        opt.textContent = v.variant.toUpperCase();
+        opt.textContent = v.asset_name || v.variant.toUpperCase();
         if (v.asset_name === preferred.asset_name) opt.selected = true;
         select.appendChild(opt);
       });
