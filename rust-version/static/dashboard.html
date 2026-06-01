@@ -532,25 +532,38 @@ async function fetchMonitoring() {
 }
 
 async function syncLoadedModel() {
+  const el = $('#loadedModel');
+  const versionBadge = _activeRuntimeVersion
+    ? ` <span class="running-badge" title="Running runtime version">runtime ${esc(_activeRuntimeVersion)}</span>`
+    : '';
+  let runningName = '—';
   try {
     const d = await api('/api/perf');
     const path = d && d.loaded_model_path;
-    const el = $('#loadedModel');
-    const versionBadge = _activeRuntimeVersion
-      ? ` <span class="running-badge" title="Running runtime version">runtime ${esc(_activeRuntimeVersion)}</span>`
-      : '';
     const idx = (_profilesCache.length && path)
       ? resolveRunningProfileIdx(_profilesCache, path)
       : -1;
-    const runningName = (idx >= 0 && _profilesCache[idx] && _profilesCache[idx].name)
+    runningName = (idx >= 0 && _profilesCache[idx] && _profilesCache[idx].name)
       ? _profilesCache[idx].name
       : '—';
+    if (!runningName || runningName === '—') {
+      if (path) {
+        const prev = _profilesCache[_runningProfileIdx];
+        if (prev && prev.name) runningName = prev.name;
+      } else {
+        _runningProfileIdx = -1;
+      }
+    }
     el.innerHTML = `Profile: <span class="profile-name" title="${esc(runningName)}">${esc(runningName)}</span>${versionBadge}`;
     if (idx !== _runningProfileIdx) {
       _runningProfileIdx = idx;
       fetchProfiles();
     }
-  } catch (_e) { /* silent: model may not be loaded yet */ }
+  } catch (_e) {
+    const prev = _profilesCache[_runningProfileIdx];
+    runningName = (prev && prev.name) ? prev.name : '—';
+    el.innerHTML = `Profile: <span class="profile-name" title="${esc(runningName)}">${esc(runningName)}</span>${versionBadge}`;
+  }
 }
 
 function formatDuration(totalSecs) {
@@ -591,8 +604,8 @@ async function doLaunch() {
     headerResult(`Launched PID ${d.pid}`, false);
     updateStatusBadge();
     fetchMonitoring();
-    fetchProfiles();
-    syncLoadedModel();
+    await fetchProfiles();
+    await syncLoadedModel();
   } catch (e) { headerResult(e.message, true); }
 }
 
@@ -603,8 +616,8 @@ async function doStop() {
     headerResult(d.stopped ? `Stopped PID ${d.pid}` : 'Nothing to stop', false);
     updateStatusBadge();
     fetchMonitoring();
-    fetchProfiles();
-    syncLoadedModel();
+    await fetchProfiles();
+    await syncLoadedModel();
   } catch (e) { headerResult(e.message, true); }
 }
 
@@ -626,8 +639,8 @@ async function doRestartProfile(profileIdx) {
     headerResult(`Restarted PID ${d.pid}`, false);
     updateStatusBadge();
     fetchMonitoring();
-    fetchProfiles();
-    syncLoadedModel();
+    await fetchProfiles();
+    await syncLoadedModel();
   } catch (e) { headerResult(e.message, true); }
 }
 
