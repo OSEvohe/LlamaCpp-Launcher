@@ -2,6 +2,14 @@
 
 ## Active Plans
 
+### 🧩 service.rs Complete Refactor
+Refactoriser `rust-version/src/service.rs` en façade mince + services spécialisés, avec séparation par type et règles OOP/SOLID/TDA.
+
+- **Step 1:** [`service-rs-complete-refactor/01-target-architecture-and-boundaries.md`](service-rs-complete-refactor/01-target-architecture-and-boundaries.md)
+- **Step 2:** [`service-rs-complete-refactor/02-state-persistence-and-profile-domain.md`](service-rs-complete-refactor/02-state-persistence-and-profile-domain.md)
+- **Step 3:** [`service-rs-complete-refactor/03-versions-process-startup-and-monitoring.md`](service-rs-complete-refactor/03-versions-process-startup-and-monitoring.md)
+- **Step 4:** [`service-rs-complete-refactor/04-facade-api-and-test-migration.md`](service-rs-complete-refactor/04-facade-api-and-test-migration.md)
+
 ### 🗂️ llama.cpp Version Management
 Manage launcher-owned llama.cpp versions: installed list, GitHub catalog, download/delete lifecycle, and active-version selection.
 

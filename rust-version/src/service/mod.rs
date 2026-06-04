@@ -8,115 +8,21 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 use crate::command::{self, canonical_adv_key, favorite_string_value};
-use crate::config::{self, app_dir};
+use crate::config::app_dir;
 use crate::discovery::scan_gguf_models;
 use crate::models::{GlobalSettings, InstalledVersion, LlamaOption, Profile};
 use crate::monitoring::{self, MonitoringService, PerfStats};
 use crate::options::{load_options_from_exe, resolve_llama_server_path};
 use crate::process::{self, read_pid, write_pid};
 
-// ---------------------------------------------------------------------------
-// Coercion helpers mirroring legacy behavior
-// ---------------------------------------------------------------------------
-
-/// Coerce a JSON value to ``i64``. Booleans are **rejected** (legacy parity).
-fn coerce_int(val: &serde_json::Value, field: &str) -> Result<i64, String> {
-    match val {
-        serde_json::Value::Bool(_) => Err(format!("{} must be an integer", field)),
-        serde_json::Value::Number(n) => n.as_i64().ok_or_else(|| format!("{} must be an integer", field)),
-        serde_json::Value::String(s) => {
-            let trimmed = s.trim();
-            if trimmed.is_empty() {
-                return Err(format!("{} must be an integer", field));
-            }
-            trimmed.parse::<i64>().map_err(|_| format!("{} must be an integer", field))
-        }
-        _ => Err(format!("{} must be an integer", field)),
-    }
-}
-
-/// Coerce a JSON value to ``f64``. Booleans are **rejected** (legacy parity).
-fn coerce_float(val: &serde_json::Value, field: &str) -> Result<f64, String> {
-    match val {
-        serde_json::Value::Bool(_) => Err(format!("{} must be a number", field)),
-        serde_json::Value::Number(n) => {
-            if let Some(f) = n.as_f64() {
-                Ok(f)
-            } else {
-                Err(format!("{} must be a number", field))
-            }
-        }
-        serde_json::Value::String(s) => {
-            let trimmed = s.trim();
-            if trimmed.is_empty() {
-                return Err(format!("{} must be a number", field));
-            }
-            trimmed.parse::<f64>().map_err(|_| format!("{} must be a number", field))
-        }
-        _ => Err(format!("{} must be a number", field)),
-    }
-}
-
-/// Coerce a JSON value to ``bool``. Accepts ``"true"``/``"false"`` strings.
-fn coerce_bool(val: &serde_json::Value, field: &str) -> Result<bool, String> {
-    match val {
-        serde_json::Value::Bool(b) => Ok(*b),
-        serde_json::Value::String(s) => {
-            match s.trim().to_lowercase().as_str() {
-                "true" => Ok(true),
-                "false" => Ok(false),
-                _ => Err(format!("{} must be a boolean", field)),
-            }
-        }
-        _ => Err(format!("{} must be a boolean", field)),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Filesystem helpers (used by install/uninstall)
-// ---------------------------------------------------------------------------
-
-/// Recursively copy a directory tree.
-fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dst)
-        .map_err(|e| format!("Failed to create dir {:?}: {}", dst, e))?;
-    for entry in std::fs::read_dir(src)
-        .map_err(|e| format!("Failed to read dir {:?}: {}", src, e))?
-    {
-        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            copy_dir_all(&src_path, &dst_path)?;
-        } else {
-            std::fs::copy(&src_path, &dst_path)
-                .map_err(|e| format!("Failed to copy {:?}: {}", src_path, e))?;
-        }
-    }
-    Ok(())
-}
-
-/// Recursively search *dir* for ``llama-server.exe``, returning the full path.
-fn find_exe_in_dir(dir: &Path) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    for entry in entries {
-        let entry = entry.ok()?;
-        if entry.file_name() == "llama-server.exe" {
-            return Some(entry.path());
-        }
-    }
-    // Check one level deep
-    let entries = std::fs::read_dir(dir).ok()?;
-    for entry in entries {
-        let entry = entry.ok()?;
-        if entry.file_type().ok()?.is_dir() {
-            if let Some(found) = find_exe_in_dir(&entry.path()) {
-                return Some(found);
-            }
-        }
-    }
-    None
-}
+mod support;
+mod global_settings_domain;
+mod state_persistence;
+mod version_queries;
+use support::executable_finder::find_exe_in_dir;
+use support::file_tree_copier::copy_dir_all;
+use support::startup_guard::ensure_startup_pid;
+use support::value_coercer::{coerce_bool, coerce_float, coerce_int};
 
 // ---------------------------------------------------------------------------
 // Internal state (guarded by RwLock)
@@ -125,14 +31,6 @@ fn find_exe_in_dir(dir: &Path) -> Option<PathBuf> {
 /// Mutable runtime state protected by a single ``RwLock``.
 struct State {
     current_model_path: String,
-}
-
-fn ensure_startup_pid(action: &str, pid: i32) -> Result<(), String> {
-    if pid > 0 {
-        Ok(())
-    } else {
-        Err(format!("startup profile {} failed to start process", action))
-    }
 }
 
 impl Default for State {
@@ -212,86 +110,19 @@ impl LlamaLauncherService {
     }
 
     fn load_profiles_internal(&self) -> Vec<Profile> {
-        if self.is_default_app_dir {
-            config::load_profiles()
-        } else {
-            self.ensure_state();
-            if !self.profiles_file.exists() {
-                return vec![Profile::default()];
-            }
-            match std::fs::read_to_string(&self.profiles_file) {
-                Ok(text) => {
-                    let data: serde_json::Value = match serde_json::from_str(&text) {
-                        Ok(d) => d,
-                        Err(_) => return vec![Profile::default()],
-                    };
-                    match data.get("profiles").and_then(|v| v.as_array()) {
-                        Some(arr) => {
-                            let mut profiles = Vec::new();
-                            for item in arr {
-                                let mut obj = match item.as_object().cloned() {
-                                    Some(o) => o,
-                                    None => continue,
-                                };
-                                config::normalize_mtp(&mut obj);
-                                if let Ok(p) = serde_json::from_value(serde_json::Value::Object(obj)) {
-                                    profiles.push(p);
-                                }
-                            }
-                            if profiles.is_empty() {
-                                vec![Profile::default()]
-                            } else {
-                                if config::normalize_profile_uids(&mut profiles) {
-                                    self.save_profiles_internal(&profiles);
-                                }
-                                profiles
-                            }
-                        }
-                        None => vec![Profile::default()],
-                    }
-                }
-                Err(_) => vec![Profile::default()],
-            }
-        }
+        state_persistence::load_profiles_internal(self)
     }
 
     fn save_profiles_internal(&self, profiles: &[Profile]) {
-        if self.is_default_app_dir {
-            config::save_profiles(profiles);
-        } else {
-            self.ensure_state();
-            let payload = serde_json::json!({ "profiles": profiles });
-            let json = serde_json::to_string_pretty(&payload).expect("serialize profiles");
-            std::fs::write(&self.profiles_file, json).expect("write profiles.json");
-        }
+        state_persistence::save_profiles_internal(self, profiles)
     }
 
     fn load_global_internal(&self) -> GlobalSettings {
-        if self.is_default_app_dir {
-            config::load_global()
-        } else {
-            self.ensure_state();
-            if !self.global_file.exists() {
-                return GlobalSettings::default();
-            }
-            match std::fs::read_to_string(&self.global_file) {
-                Ok(text) => match serde_json::from_str(&text) {
-                    Ok(gs) => gs,
-                    Err(_) => GlobalSettings::default(),
-                },
-                Err(_) => GlobalSettings::default(),
-            }
-        }
+        state_persistence::load_global_internal(self)
     }
 
     fn save_global_internal(&self, settings: &GlobalSettings) {
-        if self.is_default_app_dir {
-            config::save_global(settings);
-        } else {
-            self.ensure_state();
-            let json = serde_json::to_string_pretty(settings).expect("serialize GlobalSettings");
-            std::fs::write(&self.global_file, json).expect("write global.json");
-        }
+        state_persistence::save_global_internal(self, settings)
     }
 
     fn stop_internal(&self) -> i32 {
@@ -625,58 +456,14 @@ impl LlamaLauncherService {
         &self,
         settings_data: &HashMap<String, serde_json::Value>,
     ) -> GlobalSettings {
-        let _guard = self.state.write().expect("lock poisoned");
-        let current = self.load_global_internal();
-        let settings = GlobalSettings {
-            llama_server_path: settings_data
-                .get("llama_server_path")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .unwrap_or(current.llama_server_path),
-            model_dirs: settings_data
-                .get("model_dirs")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or(current.model_dirs),
-            api_host: settings_data
-                .get("api_host")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .unwrap_or(current.api_host),
-            api_port: settings_data
-                .get("api_port")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(current.api_port),
-            installed_versions: settings_data
-                .get("installed_versions")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| serde_json::from_value::<InstalledVersion>(v.clone()).ok())
-                        .collect()
-                })
-                .unwrap_or(current.installed_versions),
-            active_version: settings_data
-                .get("active_version")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .or(current.active_version),
-            install_states: current.install_states,
-        };
-        self.save_global_internal(&settings);
-        settings
+        global_settings_domain::update_global(self, settings_data)
     }
 
     // -- version management -------------------------------------------------
 
     /// Return the list of installed llama.cpp versions.
     pub fn list_installed_versions(&self) -> Vec<InstalledVersion> {
-        let _guard = self.state.read().expect("lock poisoned");
-        self.load_global_internal().installed_versions
+        version_queries::list_installed_versions(self)
     }
 
     /// Register or update an installed version entry.
@@ -739,37 +526,7 @@ impl LlamaLauncherService {
     /// 2. Fall back to ``llama_server_path`` if set.
     /// 3. Return error if no executable is available.
     pub fn resolve_active_executable(&self) -> Result<String, String> {
-        let _guard = self.state.read().expect("lock poisoned");
-        let gs = self.load_global_internal();
-
-        // 1. Try active_version first.
-        if let Some(ref tag) = gs.active_version {
-            if let Some(ver) = gs.installed_versions.iter().find(|v| v.tag == *tag) {
-                let exe_path = &ver.executable_path;
-                if !exe_path.is_empty() && Path::new(exe_path).exists() {
-                    return Ok(exe_path.clone());
-                }
-                // Executable missing — stale.
-                return Err(format!(
-                    "active version '{}' is stale: executable not found at '{}'",
-                    tag, exe_path
-                ));
-            }
-        }
-
-        // 2. Fallback to llama_server_path.
-        if !gs.llama_server_path.is_empty() && Path::new(&gs.llama_server_path).exists() {
-            return Ok(gs.llama_server_path.clone());
-        }
-        if !gs.llama_server_path.is_empty() {
-            return Err(format!(
-                "fallback llama_server_path not found: '{}'",
-                gs.llama_server_path
-            ));
-        }
-
-        // 3. Nothing available.
-        Err("no active version set and llama_server_path is empty".to_string())
+        version_queries::resolve_active_executable(self)
     }
 
     // -- version install / uninstall ----------------------------------------
@@ -783,9 +540,7 @@ impl LlamaLauncherService {
 
     /// Get the current install state for a version tag, if any.
     pub fn get_install_state(&self, tag: &str) -> Option<crate::models::InstallState> {
-        let _guard = self.state.read().expect("lock poisoned");
-        let gs = self.load_global_internal();
-        gs.install_states.get(tag).cloned()
+        version_queries::get_install_state(self, tag)
     }
 
     /// Start installing a version from a GitHub release asset.
