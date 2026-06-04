@@ -1879,6 +1879,24 @@ mod tests {
     }
 
     #[test]
+    fn test_list_installed_versions_falls_back_to_legacy_llama_server_path() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+        let exe_path = tmp.path().join("llama-server.exe");
+        std::fs::write(&exe_path, "").expect("create dummy exe");
+
+        let mut gs = svc.load_global();
+        gs.llama_server_path = exe_path.to_string_lossy().to_string();
+        svc.save_global(gs);
+
+        let versions = svc.list_installed_versions();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].tag, "legacy");
+        assert_eq!(versions[0].source, "legacy");
+        assert_eq!(versions[0].executable_path, exe_path.to_string_lossy().to_string());
+    }
+
+    #[test]
     fn test_register_and_list_installed_version() {
         let tmp = TempDir::new().expect("create temp dir");
         let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));

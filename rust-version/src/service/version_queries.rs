@@ -1,12 +1,37 @@
 use std::path::Path;
 
-use crate::models::InstalledVersion;
+use crate::models::{InstalledVersion, VersionStatus};
+use crate::options::resolve_llama_server_path;
 
 use super::LlamaLauncherService;
 
 pub(super) fn list_installed_versions(service: &LlamaLauncherService) -> Vec<InstalledVersion> {
     let _guard = service.state.read().expect("lock poisoned");
-    service.load_global_internal().installed_versions
+    let gs = service.load_global_internal();
+    if !gs.installed_versions.is_empty() {
+        return gs.installed_versions;
+    }
+
+    if gs.llama_server_path.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let exe_path = resolve_llama_server_path(&gs.llama_server_path);
+    vec![InstalledVersion {
+        tag: "legacy".to_string(),
+        source: "legacy".to_string(),
+        install_path: exe_path
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        executable_path: exe_path.to_string_lossy().to_string(),
+        status: if exe_path.exists() {
+            VersionStatus::Installed
+        } else {
+            VersionStatus::Missing
+        },
+        installed_at: None,
+    }]
 }
 
 pub(super) fn resolve_active_executable(service: &LlamaLauncherService) -> Result<String, String> {

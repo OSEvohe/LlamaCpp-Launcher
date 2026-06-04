@@ -59,6 +59,63 @@ fn global_file() -> PathBuf {
     p
 }
 
+fn save_global_to_path(path: &Path, settings: &GlobalSettings) {
+    let json = serde_json::to_string_pretty(settings).expect("serialize GlobalSettings");
+    std::fs::write(path, json).expect("write global.json");
+}
+
+fn load_global_from_path(path: &Path) -> Option<GlobalSettings> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let data: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&text).ok()?;
+
+    let model_dirs_val = data.get("model_dirs");
+    let model_dirs: Vec<String> = match model_dirs_val {
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    let installed_versions: Vec<InstalledVersion> = data
+        .get("installed_versions")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| serde_json::from_value::<InstalledVersion>(v.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let active_version: Option<String> = data
+        .get("active_version")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let install_states: std::collections::HashMap<String, crate::models::InstallState> = data
+        .get("install_states")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, val)| {
+                    serde_json::from_value::<crate::models::InstallState>(val.clone()).ok()
+                        .map(|state| (k.clone(), state))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(GlobalSettings {
+        llama_server_path: safe_str(data.get("llama_server_path").unwrap_or(&serde_json::Value::Null), ""),
+        model_dirs,
+        api_host: safe_str(data.get("api_host").unwrap_or(&serde_json::Value::Null), "127.0.0.1"),
+        api_port: safe_int(data.get("api_port").unwrap_or(&serde_json::Value::Null), 0),
+        installed_versions,
+        active_version,
+        install_states,
+    })
+}
+
 fn profiles_file() -> PathBuf {
     let mut p = state_dir();
     p.push("profiles.json");
@@ -85,10 +142,70 @@ fn migrate_state_file_if_missing(file_name: &str) {
     let _ = std::fs::copy(src, dest);
 }
 
+fn merge_legacy_global_if_needed() {
+    let current_state_dir = state_dir();
+    let legacy_state_dir = repo_state_dir();
+    if current_state_dir == legacy_state_dir {
+        return;
+    }
+
+    let dest = current_state_dir.join("global.json");
+    let src = legacy_state_dir.join("global.json");
+    if !dest.exists() || !src.exists() {
+        return;
+    }
+
+    let Some(mut current) = load_global_from_path(&dest) else {
+        return;
+    };
+    let Some(legacy) = load_global_from_path(&src) else {
+        return;
+    };
+
+    let mut changed = false;
+
+    if current.llama_server_path.trim().is_empty() && !legacy.llama_server_path.trim().is_empty() {
+        current.llama_server_path = legacy.llama_server_path;
+        changed = true;
+    }
+    if current.model_dirs.is_empty() && !legacy.model_dirs.is_empty() {
+        current.model_dirs = legacy.model_dirs;
+        changed = true;
+    }
+    if (current.api_host.trim().is_empty() || current.api_host == "127.0.0.1")
+        && !legacy.api_host.trim().is_empty()
+        && legacy.api_host != "127.0.0.1"
+    {
+        current.api_host = legacy.api_host;
+        changed = true;
+    }
+    if current.api_port == 0 && legacy.api_port > 0 {
+        current.api_port = legacy.api_port;
+        changed = true;
+    }
+    if current.installed_versions.is_empty() && !legacy.installed_versions.is_empty() {
+        current.installed_versions = legacy.installed_versions;
+        changed = true;
+    }
+    if current.active_version.is_none() && legacy.active_version.is_some() {
+        current.active_version = legacy.active_version;
+        changed = true;
+    }
+    if current.install_states.is_empty() && !legacy.install_states.is_empty() {
+        current.install_states = legacy.install_states;
+        changed = true;
+    }
+
+    if changed {
+        save_global_to_path(&dest, &current);
+    }
+}
+
 fn ensure_state() {
     std::fs::create_dir_all(state_dir()).ok();
     migrate_state_file_if_missing("global.json");
     migrate_state_file_if_missing("profiles.json");
+    merge_legacy_global_if_needed();
 }
 
 // ---------------------------------------------------------------------------
@@ -276,72 +393,14 @@ pub fn normalize_profile_uids(profiles: &mut [Profile]) -> bool {
 pub fn load_global() -> GlobalSettings {
     ensure_state();
     let path = global_file();
-    if !path.exists() {
-        return GlobalSettings::default();
-    }
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(_) => return GlobalSettings::default(),
-    };
-    let data: serde_json::Map<String, serde_json::Value> = match serde_json::from_str(&text) {
-        Ok(d) => d,
-        Err(_) => return GlobalSettings::default(),
-    };
-
-    let model_dirs_val = data.get("model_dirs");
-    let model_dirs: Vec<String> = match model_dirs_val {
-        Some(serde_json::Value::Array(arr)) => arr
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect(),
-        _ => Vec::new(),
-    };
-
-    let installed_versions: Vec<InstalledVersion> = data
-        .get("installed_versions")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| serde_json::from_value::<InstalledVersion>(v.clone()).ok())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let active_version: Option<String> = data
-        .get("active_version")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-
-    let install_states: std::collections::HashMap<String, crate::models::InstallState> = data
-        .get("install_states")
-        .and_then(|v| v.as_object())
-        .map(|obj| {
-            obj.iter()
-                .filter_map(|(k, val)| {
-                    serde_json::from_value::<crate::models::InstallState>(val.clone()).ok()
-                        .map(|state| (k.clone(), state))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    GlobalSettings {
-        llama_server_path: safe_str(data.get("llama_server_path").unwrap_or(&serde_json::Value::Null), ""),
-        model_dirs,
-        api_host: safe_str(data.get("api_host").unwrap_or(&serde_json::Value::Null), "127.0.0.1"),
-        api_port: safe_int(data.get("api_port").unwrap_or(&serde_json::Value::Null), 0),
-        installed_versions,
-        active_version,
-        install_states,
-    }
+    load_global_from_path(&path).unwrap_or_default()
 }
 
 /// Save global settings to ``.launcher/global.json``.
 pub fn save_global(settings: &GlobalSettings) {
     ensure_state();
     let path = global_file();
-    let json = serde_json::to_string_pretty(settings).expect("serialize GlobalSettings");
-    std::fs::write(&path, json).expect("write global.json");
+    save_global_to_path(&path, settings);
 }
 
 // ---------------------------------------------------------------------------

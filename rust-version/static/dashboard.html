@@ -1387,12 +1387,14 @@ function renderInstalledVersions(installed, activeTag) {
     row.appendChild(path);
     row.appendChild(document.createElement('br'));
 
-    const delBtn = document.createElement('button');
-    delBtn.className = 'btn danger small';
-    delBtn.type = 'button';
-    delBtn.textContent = 'Delete';
-    delBtn.addEventListener('click', () => doDeleteVersion(v.tag));
-    row.appendChild(delBtn);
+    if ((v.source || '') !== 'legacy') {
+      const delBtn = document.createElement('button');
+      delBtn.className = 'btn danger small';
+      delBtn.type = 'button';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', () => doDeleteVersion(v.tag));
+      row.appendChild(delBtn);
+    }
 
     list.appendChild(row);
   });
