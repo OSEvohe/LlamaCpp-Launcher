@@ -130,6 +130,13 @@ fn apply_startup_profile_on_boot(service: &LlamaLauncherService) {
     }
 }
 
+fn restore_versions_on_boot(service: &LlamaLauncherService) {
+    let restored = service.restore_installed_versions_from_disk();
+    if restored > 0 {
+        println!("Restored {} installed runtime(s) from disk", restored);
+    }
+}
+
 async fn run_api_server(host: String, port: i64) -> Result<(), String> {
     let bind_addr = format!("{}:{}", host, port);
 
@@ -142,6 +149,7 @@ async fn run_api_server(host: String, port: i64) -> Result<(), String> {
     println!("Starting LLama Launcher API server on {}", local_addr);
 
     let service = LlamaLauncherService::new(None);
+    restore_versions_on_boot(&service);
     apply_startup_profile_on_boot(&service);
     let state: SharedState = Arc::new(RwLock::new(service));
     server::serve(listener, state)
@@ -261,6 +269,7 @@ fn run_windows_service(arguments: Vec<OsString>) -> Result<(), String> {
         .map_err(|err| format!("failed to report service running status: {}", err))?;
 
     let service = LlamaLauncherService::new(None);
+    restore_versions_on_boot(&service);
     apply_startup_profile_on_boot(&service);
     let state: SharedState = Arc::new(RwLock::new(service));
     let service_for_shutdown = Arc::clone(&state);

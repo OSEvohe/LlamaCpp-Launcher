@@ -10,7 +10,7 @@ use std::sync::RwLock;
 use crate::command::{self, canonical_adv_key, favorite_string_value};
 use crate::config::app_dir;
 use crate::discovery::scan_gguf_models;
-use crate::models::{GlobalSettings, InstalledVersion, LlamaOption, Profile};
+use crate::models::{GlobalSettings, InstalledVersion, LlamaOption, Profile, VersionStatus};
 use crate::monitoring::{self, MonitoringService, PerfStats};
 use crate::options::{load_options_from_exe, resolve_llama_server_path};
 use crate::process::{self, read_pid, write_pid};
@@ -484,6 +484,77 @@ impl LlamaLauncherService {
             gs.installed_versions.push(version);
         }
         self.save_global_internal(&gs);
+    }
+
+    /// Restore installed versions by scanning ``.launcher/versions``.
+    pub fn restore_installed_versions_from_disk(&self) -> usize {
+        let _guard = self.state.write().expect("lock poisoned");
+        self.ensure_state();
+        std::fs::create_dir_all(&self.versions_dir).ok();
+
+        let mut gs = self.load_global_internal();
+        let mut restored = 0usize;
+
+        let entries = match std::fs::read_dir(&self.versions_dir) {
+            Ok(entries) => entries,
+            Err(_) => return 0,
+        };
+
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+
+            let tag = entry.file_name().to_string_lossy().trim().to_string();
+            if tag.is_empty() || tag.starts_with('.') {
+                continue;
+            }
+
+            let install_dir = entry.path();
+            let Some(exe_path) = find_exe_in_dir(&install_dir) else {
+                continue;
+            };
+
+            let existing = gs.installed_versions.iter().find(|v| v.tag == tag).cloned();
+            let version = InstalledVersion {
+                tag: tag.clone(),
+                source: existing
+                    .as_ref()
+                    .map(|v| v.source.clone())
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| "github".to_string()),
+                install_path: install_dir.to_string_lossy().to_string(),
+                executable_path: exe_path.to_string_lossy().to_string(),
+                status: VersionStatus::Installed,
+                installed_at: existing.as_ref().and_then(|v| v.installed_at.clone()),
+            };
+
+            match gs.installed_versions.iter_mut().find(|v| v.tag == tag) {
+                Some(current)
+                    if current.install_path != version.install_path
+                        || current.executable_path != version.executable_path
+                        || current.status != version.status
+                        || current.source != version.source =>
+                {
+                    *current = version;
+                    restored += 1;
+                }
+                Some(_) => {}
+                None => {
+                    gs.installed_versions.push(version);
+                    restored += 1;
+                }
+            }
+        }
+
+        if restored > 0 {
+            self.save_global_internal(&gs);
+        }
+
+        restored
     }
 
     /// Remove an installed version entry by tag.
@@ -1894,6 +1965,28 @@ mod tests {
         assert_eq!(versions[0].tag, "legacy");
         assert_eq!(versions[0].source, "legacy");
         assert_eq!(versions[0].executable_path, exe_path.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn test_restore_installed_versions_from_versions_dir() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let svc = LlamaLauncherService::new(Some(tmp.path().to_path_buf()));
+        svc.ensure_state();
+
+        let install_dir = tmp.path().join(".launcher").join("versions").join("b3594");
+        std::fs::create_dir_all(&install_dir).expect("create install dir");
+        let exe_path = install_dir.join("llama-server.exe");
+        std::fs::write(&exe_path, "").expect("create dummy exe");
+
+        assert_eq!(svc.restore_installed_versions_from_disk(), 1);
+
+        let versions = svc.list_installed_versions();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].tag, "b3594");
+        assert_eq!(versions[0].source, "github");
+        assert_eq!(versions[0].install_path, install_dir.to_string_lossy().to_string());
+        assert_eq!(versions[0].executable_path, exe_path.to_string_lossy().to_string());
+        assert_eq!(versions[0].status, VersionStatus::Installed);
     }
 
     #[test]
