@@ -88,6 +88,25 @@ pub fn favorite_string_value(
     }
 }
 
+fn unquote_grouped_token(token: String) -> String {
+    if token.len() >= 2 {
+        let bytes = token.as_bytes();
+        let first = bytes[0];
+        let last = bytes[token.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return token[1..token.len() - 1].to_string();
+        }
+    }
+    token
+}
+
+fn split_command_args(s: &str) -> Result<Vec<String>, ShlexError> {
+    Ok(shlex_split(s)?
+        .into_iter()
+        .map(unquote_grouped_token)
+        .collect())
+}
+
 /// Assemble the full command-line list for llama-server.
 ///
 /// This is the pure business-logic part: it does NOT interact with the UI.
@@ -171,18 +190,18 @@ pub fn build_command(
 
         if val.starts_with("--") {
             // Value is a negative flag or similar; split it
-            cmd.extend(shlex_split(&val)?);
+            cmd.extend(split_command_args(&val)?);
         } else {
             cmd.push(ckey);
             if !val.is_empty() {
-                cmd.extend(shlex_split(&val)?);
+                cmd.extend(split_command_args(&val)?);
             }
         }
     }
 
     // Extra args
     if !profile.extra_args.is_empty() {
-        cmd.extend(shlex_split(&profile.extra_args)?);
+        cmd.extend(split_command_args(&profile.extra_args)?);
     }
 
     Ok(cmd)
@@ -650,7 +669,7 @@ mod tests {
         assert_eq!(cmd[cmd.len() - 1], "--another-flag");
     }
 
-    /// Acceptance: extra_args with quoted values (quotes preserved in posix=False).
+    /// Acceptance: extra_args quoted grouping is removed for direct argv.
     #[test]
     fn test_build_command_extra_args_quoted() {
         let mut profile = make_test_profile();
@@ -661,9 +680,32 @@ mod tests {
 
         let cmd = build_command(exe, &profile, &options).unwrap();
 
-        // shlex.split(posix=False) preserves quotes in output
+        // Grouping quotes are not part of the final argv token.
         assert_eq!(cmd[cmd.len() - 2], "--prompt");
-        assert_eq!(cmd[cmd.len() - 1], r#""Hello, World!""#);
+        assert_eq!(cmd[cmd.len() - 1], "Hello, World!");
+    }
+
+    #[test]
+    fn test_build_command_advanced_value_single_quoted_json() {
+        let mut profile = make_test_profile();
+        profile.advanced_favorites = vec!["--chat-template-kwargs".into()];
+        let mut av = HashMap::new();
+        av.insert(
+            "--chat-template-kwargs".into(),
+            "'{\"preserve_thinking\": true}'".into(),
+        );
+        profile.advanced_values = av;
+
+        let exe = Path::new("/usr/bin/llama-server");
+        let options = make_test_options();
+
+        let cmd = build_command(exe, &profile, &options).unwrap();
+
+        let idx = cmd
+            .iter()
+            .position(|s| s == "--chat-template-kwargs")
+            .unwrap();
+        assert_eq!(cmd[idx + 1], "{\"preserve_thinking\": true}");
     }
 
     /// Acceptance: shlex_split handles basic cases (posix=False).

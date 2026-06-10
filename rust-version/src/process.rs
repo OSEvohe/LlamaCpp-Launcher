@@ -300,12 +300,14 @@ fn escape_for_cmdline(s: &str) -> String {
         if c == '\\' {
             backslash_count += 1;
         } else if c == '"' {
-            // Escape backslashes before the quote: double them.
+            // Escape backslashes before the quote: double them, then add one more
+            // backslash so the quote itself is escaped for CommandLineToArgvW.
             for _ in 0..backslash_count {
                 result.push('\\');
                 result.push('\\');
             }
             backslash_count = 0;
+            result.push('\\');
             result.push('"');
         } else {
             // Flush backslashes as-is (not followed by a quote).
@@ -316,8 +318,10 @@ fn escape_for_cmdline(s: &str) -> String {
             result.push(c);
         }
     }
-    // Flush any remaining backslashes.
+    // Flush any remaining backslashes (double them so the closing wrapper quote
+    // is treated as a delimiter, not escaped by the trailing backslash).
     for _ in 0..backslash_count {
+        result.push('\\');
         result.push('\\');
     }
     result
@@ -653,5 +657,30 @@ mod tests {
         let cmd: Vec<String> = vec![];
         let result = build_command_line(&cmd);
         assert!(result.is_empty());
+    }
+
+    /// Acceptance: embedded double-quotes are escaped for CommandLineToArgvW.
+    #[test]
+    fn test_build_command_line_embedded_quotes() {
+        let cmd = vec![
+            "llama-server.exe".to_string(),
+            "--chat-template-kwargs".to_string(),
+            "{\"preserve_thinking\": true}".to_string(),
+        ];
+        let result = build_command_line(&cmd);
+        // Inner " must be escaped as \" so the whole JSON stays one argv element
+        assert_eq!(result, "llama-server.exe --chat-template-kwargs \"{\\\"preserve_thinking\\\": true}\"");
+    }
+
+    /// Acceptance: argument ending with backslash+space has trailing backslashes doubled.
+    #[test]
+    fn test_build_command_line_trailing_backslash() {
+        let cmd = vec![
+            "some.exe".to_string(),
+            "C:\\Program Files\\path\\".to_string(),
+        ];
+        let result = build_command_line(&cmd);
+        // Trailing backslash must be doubled so the wrapper " is a delimiter
+        assert_eq!(result, "some.exe \"C:\\Program Files\\path\\\\\"");
     }
 }
