@@ -78,6 +78,7 @@ pub fn app(state: SharedState) -> Router {
         .route("/api/versions/installed", get(get_versions_installed))
         .route("/api/versions/available", get(get_versions_available))
         .route("/api/versions/install", post(post_versions_install))
+        .route("/api/versions/:tag/cancel", post(post_versions_cancel))
         .route("/api/versions/:tag/active", post(post_versions_set_active))
         .route("/api/versions/:tag", get(get_versions_by_tag).delete(delete_versions_uninstall))
         .route(
@@ -376,6 +377,17 @@ async fn post_versions_install(
         .map_err(|err| ApiError::bad_request(&err))?;
 
     Ok(Json(serde_json::json!({ "started": true, "tag": req.tag, "asset": asset.name })))
+}
+
+async fn post_versions_cancel(
+    State(state): State<SharedState>,
+    Path(tag): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let service = state.read().expect("service lock poisoned");
+    service
+        .cancel_install(&tag)
+        .map_err(|err| ApiError::bad_request(&err))?;
+    Ok(Json(serde_json::json!({ "cancelled": tag })))
 }
 
 async fn post_versions_set_active(
@@ -1078,6 +1090,49 @@ mod tests {
             .expect_err("empty tag should be rejected");
         assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
         assert_eq!(err.message, "tag must be a non-empty string");
+    }
+
+    #[tokio::test]
+    async fn versions_cancel_endpoint_resets_install_state() {
+        let (base, state, handle) = spawn_server().await;
+        let client = Client::new();
+
+        {
+            let service = state.read().expect("service lock poisoned");
+            let mut install_states = HashMap::new();
+            install_states.insert(
+                "b3594".into(),
+                crate::models::InstallState {
+                    phase: crate::models::InstallPhase::Downloading,
+                    downloaded_bytes: 12,
+                    total_bytes: 24,
+                    error: String::new(),
+                },
+            );
+            service.save_global(GlobalSettings {
+                install_states,
+                ..GlobalSettings::default()
+            });
+        }
+
+        let response = client
+            .post(format!("{}/api/versions/b3594/cancel", base))
+            .send()
+            .await
+            .expect("cancel install");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body: Value = response.json().await.expect("parse cancel response");
+        assert_eq!(body.get("cancelled").and_then(|v| v.as_str()), Some("b3594"));
+
+        {
+            let service = state.read().expect("service lock poisoned");
+            let install_state = service.get_install_state("b3594").expect("install state present");
+            assert_eq!(install_state.phase, crate::models::InstallPhase::Idle);
+            assert_eq!(install_state.error, "cancelled");
+        }
+
+        handle.abort();
     }
 
     #[tokio::test]

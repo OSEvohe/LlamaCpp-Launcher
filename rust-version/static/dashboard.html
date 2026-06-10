@@ -352,6 +352,10 @@ input.switch:checked::after{transform:translateX(18px);background:#fff}
         <div id="runtimeInstallPhase" class="text-sm mb-8"></div>
         <div class="progress-track"><div id="runtimeInstallFill" class="progress-fill"></div></div>
         <div id="runtimeInstallPercent" class="text-sm mt-8"></div>
+        <div id="runtimeInstallActions" class="btn-group mt-8" style="display:none">
+          <button class="btn small" id="runtimeCancelInstallBtn" type="button">Cancel</button>
+          <button class="btn small" id="runtimeRestartInstallBtn" type="button">Restart</button>
+        </div>
       </div>
       <h3>Installed</h3>
       <div id="installedVersionsList" class="text-sm">Loading…</div>
@@ -429,6 +433,7 @@ let _runningProfileIdx = -1;
 let _activeRuntimeVersion = '';
 let _runtimeReleases = [];
 let _runtimeInstalledSet = new Set();
+let _currentRuntimeInstallTag = '';
 
 function resolveRunningProfileIdx(profiles, loadedModelPath) {
   if (!Array.isArray(profiles) || !profiles.length || !loadedModelPath) return -1;
@@ -1534,30 +1539,44 @@ function renderRuntimeSearchResult(release) {
 function pickCurrentInstallState(installStates) {
   if (!installStates || typeof installStates !== 'object') return null;
   const active = _activeRuntimeVersion && installStates[_activeRuntimeVersion];
-  if (active && active.phase && active.phase !== 'idle' && active.phase !== 'done') return active;
-  for (const state of Object.values(installStates)) {
+  if (active && active.phase && active.phase !== 'idle' && active.phase !== 'done') {
+    return { tag: _activeRuntimeVersion, state: active };
+  }
+  for (const [tag, state] of Object.entries(installStates)) {
     if (!state || !state.phase) continue;
-    if (state.phase !== 'idle' && state.phase !== 'done') return state;
+    if (state.phase !== 'idle' && state.phase !== 'done') return { tag, state };
   }
   return null;
 }
 
 function renderInstallProgress(installStates) {
-  const installState = pickCurrentInstallState(installStates);
+  const current = pickCurrentInstallState(installStates);
   const box = $('#runtimeInstallProgress');
-  if (!installState) {
+  const actions = $('#runtimeInstallActions');
+  const cancelBtn = $('#runtimeCancelInstallBtn');
+  const restartBtn = $('#runtimeRestartInstallBtn');
+  if (!current) {
+    _currentRuntimeInstallTag = '';
     box.style.display = 'none';
+    actions.style.display = 'none';
+    cancelBtn.disabled = true;
+    restartBtn.disabled = true;
     $('#runtimeInstallPhase').textContent = '';
     $('#runtimeInstallFill').style.width = '0%';
     $('#runtimeInstallPercent').textContent = '';
     return;
   }
+  const { tag, state: installState } = current;
+  _currentRuntimeInstallTag = tag;
   box.style.display = 'block';
+  actions.style.display = '';
+  cancelBtn.disabled = false;
+  restartBtn.disabled = false;
   const phase = installState.phase || 'installing';
   const downloaded = Number(installState.downloaded_bytes || 0);
   const total = Number(installState.total_bytes || 0);
   const percent = total > 0 ? Math.min(100, Math.max(0, (downloaded / total) * 100)) : null;
-  $('#runtimeInstallPhase').textContent = `Phase: ${phase}`;
+  $('#runtimeInstallPhase').textContent = `Phase: ${phase} (${tag})`;
   $('#runtimeInstallFill').style.width = percent == null ? '0%' : `${percent.toFixed(1)}%`;
   $('#runtimeInstallPercent').textContent = percent == null
     ? 'Progress: pending size info'
@@ -1585,11 +1604,55 @@ async function doInstallVersion(tag, assetName) {
   } catch (e) { show($('#versionsResult'), e.message, true); }
 }
 
+async function doCancelInstall(tag) {
+  try {
+    const d = await api(`/api/versions/${encodeURIComponent(tag)}/cancel`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+    show($('#versionsResult'), `Install cancelled for ${d.cancelled}`, false);
+    fetchVersions();
+  } catch (e) { show($('#versionsResult'), e.message, true); }
+}
+
+async function resolveRestartAssetName(tag) {
+  const release = await api(`/api/versions/${encodeURIComponent(tag)}`);
+  const variants = Array.isArray(release.windows_variants) ? release.windows_variants : [];
+  const preferred = pickDefaultVariant(variants);
+  if (preferred && preferred.asset_name) return preferred.asset_name;
+  const fallback = release.windows_asset && release.windows_asset.name ? String(release.windows_asset.name) : '';
+  if (!fallback) throw new Error(`No downloadable Windows asset found for ${tag}.`);
+  return fallback;
+}
+
+async function doRestartInstall(tag) {
+  let cancelled = false;
+  try {
+    await api(`/api/versions/${encodeURIComponent(tag)}/cancel`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+    cancelled = true;
+    const assetName = await resolveRestartAssetName(tag);
+    const d = await api('/api/versions/install', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ tag, asset_name: assetName }) });
+    show($('#versionsResult'), `Install restarted for ${d.tag}`, false);
+  } catch (e) {
+    show(
+      $('#versionsResult'),
+      cancelled ? `Install cancelled for ${tag}, but restart failed: ${e.message}` : e.message,
+      true,
+    );
+  }
+  fetchVersions();
+}
+
 $('#runtimeSearchBtn').addEventListener('click', doSearchRuntimeVersion);
 $('#headerRuntimeSelect').addEventListener('change', () => {
   const tag = $('#headerRuntimeSelect').value;
   if (!tag || tag === _activeRuntimeVersion) return;
   doSetActiveVersion(tag);
+});
+$('#runtimeCancelInstallBtn').addEventListener('click', () => {
+  if (!_currentRuntimeInstallTag) return;
+  doCancelInstall(_currentRuntimeInstallTag);
+});
+$('#runtimeRestartInstallBtn').addEventListener('click', () => {
+  if (!_currentRuntimeInstallTag) return;
+  doRestartInstall(_currentRuntimeInstallTag);
 });
 
 async function doDeleteVersion(tag) {
