@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Bench UI</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background: #111; color: #eee; }
+    h1, h2 { margin: 0 0 12px; }
+    .grid { display: grid; grid-template-columns: 360px 1fr; gap: 20px; }
+    .card { background: #1b1b1b; border: 1px solid #333; border-radius: 8px; padding: 16px; }
+    label, select, button { display: block; width: 100%; margin-bottom: 10px; }
+    select, button { padding: 8px; background: #222; color: #eee; border: 1px solid #444; }
+    button { cursor: pointer; }
+    .task-list { max-height: 260px; overflow: auto; border: 1px solid #333; padding: 8px; }
+    .task-list label { display: flex; gap: 8px; align-items: start; margin-bottom: 8px; width: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; border-bottom: 1px solid #333; padding: 6px; vertical-align: top; }
+    pre { white-space: pre-wrap; background: #0d0d0d; border: 1px solid #333; padding: 12px; border-radius: 6px; max-height: 400px; overflow: auto; }
+    .row { display: flex; gap: 10px; }
+    .row > * { flex: 1; }
+    .ok { color: #7ee787; }
+    .fail { color: #ff7b72; }
+    .muted { color: #999; }
+  </style>
+</head>
+<body>
+  <h1>Coding Bench UI</h1>
+  <div class="grid">
+    <div class="card">
+      <h2>Launch</h2>
+      <label for="modelsFile">Models file</label>
+      <select id="modelsFile"></select>
+      <div id="tasks" class="task-list"></div>
+      <button id="launchBtn">Launch bench</button>
+      <button id="restartBtn">Restart UI</button>
+      <div id="launchStatus" class="muted"></div>
+      <h2>Jobs</h2>
+      <div id="jobs"></div>
+    </div>
+    <div class="card">
+      <h2>Runs</h2>
+      <div id="runs"></div>
+      <h2>Run details</h2>
+      <div id="runDetails" class="muted">Select a run.</div>
+      <h2>Artifact</h2>
+      <pre id="artifactView">Select an artifact.</pre>
+    </div>
+  </div>
+  <script>
+    const state = { runs: [], tasks: [] };
+
+    async function fetchJson(url, options) {
+      const resp = await fetch(url, options);
+      if (!resp.ok) throw new Error(await resp.text());
+      return resp.json();
+    }
+
+    function selectedTasks() {
+      return Array.from(document.querySelectorAll('input[name="task"]:checked')).map(x => x.value);
+    }
+
+    function renderTasks(tasks) {
+      const root = document.getElementById('tasks');
+      root.innerHTML = '';
+      tasks.forEach(task => {
+        const label = document.createElement('label');
+        label.innerHTML = `<input type="checkbox" name="task" value="${task.id}" checked> <span><strong>${task.id}</strong><br>${task.title}</span>`;
+        root.appendChild(label);
+      });
+    }
+
+    function renderJobs(jobs) {
+      const root = document.getElementById('jobs');
+      root.innerHTML = jobs.map(job => `
+        <div style="margin-bottom:10px;border:1px solid #333;padding:8px;border-radius:6px;">
+          <div><strong>${job.models_file}</strong></div>
+          <div>Status: <span class="${job.status === 'completed' ? 'ok' : job.status === 'failed' ? 'fail' : ''}">${job.status}</span></div>
+          <div class="muted">${job.results_dir}</div>
+        </div>
+      `).join('') || '<div class="muted">No jobs yet.</div>';
+    }
+
+    function renderRuns(runs) {
+      state.runs = runs;
+      const root = document.getElementById('runs');
+      root.innerHTML = runs.map(run => `
+        <div style="margin-bottom:10px;border:1px solid #333;padding:8px;border-radius:6px;">
+          <div><strong>${run.id}</strong></div>
+          <div class="muted">${run.generated_at}</div>
+          <button onclick="showRun('${run.id}')">Open</button>
+        </div>
+      `).join('') || '<div class="muted">No runs yet.</div>';
+    }
+
+    async function showRun(runId) {
+      const summary = await fetchJson(`/api/run/${runId}`);
+      const root = document.getElementById('runDetails');
+      const rows = summary.results.map(item => {
+        const artifact = `<button onclick="showArtifact('${runId}','${item.artifacts_dir}/response.txt')">response</button>
+<button onclick="showArtifact('${runId}','${item.artifacts_dir}/apply.log')">apply</button>
+<button onclick="showArtifact('${runId}','${item.artifacts_dir}/verify.log')">verify</button>`;
+        return `<tr>
+          <td>${item.model}</td>
+          <td>${item.task}</td>
+          <td>${item.score}</td>
+          <td>${item.verify_ok ? '<span class="ok">ok</span>' : '<span class="fail">fail</span>'}</td>
+          <td>${artifact}</td>
+        </tr>`;
+      }).join('');
+      root.innerHTML = `<table><thead><tr><th>Model</th><th>Task</th><th>Score</th><th>Verify</th><th>Artifacts</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    async function showArtifact(runId, relPath) {
+      const text = await fetch(`/api/artifact?run=${encodeURIComponent(runId)}&path=${encodeURIComponent(relPath)}`).then(r => r.text());
+      document.getElementById('artifactView').textContent = text;
+    }
+
+    async function launchBench() {
+      const modelsFile = document.getElementById('modelsFile').value;
+      const tasks = selectedTasks();
+      document.getElementById('launchStatus').textContent = 'Launching...';
+      await fetchJson('/api/launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ models_file: modelsFile, selected_tasks: tasks, selected_models: [] })
+      });
+      document.getElementById('launchStatus').textContent = 'Bench launched.';
+      await refresh();
+    }
+
+    async function restartUi() {
+      document.getElementById('launchStatus').textContent = 'Restarting UI...';
+      await fetchJson('/api/restart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+    }
+
+    async function refresh() {
+      const config = await fetchJson('/api/config');
+      const modelSelect = document.getElementById('modelsFile');
+      if (!modelSelect.options.length) {
+        config.model_files.forEach(name => {
+          const opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          modelSelect.appendChild(opt);
+        });
+      }
+      if (!state.tasks.length) {
+        state.tasks = config.tasks;
+        renderTasks(config.tasks);
+      }
+      renderJobs(config.jobs);
+      renderRuns(config.runs);
+    }
+
+    document.getElementById('launchBtn').addEventListener('click', launchBench);
+    document.getElementById('restartBtn').addEventListener('click', restartUi);
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

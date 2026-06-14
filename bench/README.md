@@ -23,6 +23,8 @@ Bench automatisé minimal pour comparer plusieurs modèles/quantizations sur ce 
 - `bench/tasks.json` — tâches du bench
 - `bench/models.example.json` — exemple de config modèles
 - `bench/run_coding_bench.py` — runner
+- `bench/webui.py` — mini serveur web local
+- `bench/webui.html` — interface web
 
 ## Config modèles
 
@@ -48,6 +50,14 @@ Exemple :
 ```powershell
 python bench\run_coding_bench.py --models-file bench\models.local.json
 ```
+
+UI web :
+
+```powershell
+python bench\webui.py
+```
+
+Puis ouvrir `http://127.0.0.1:8765`.
 
 Filtrer :
 
