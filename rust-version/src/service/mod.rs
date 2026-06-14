@@ -247,7 +247,10 @@ impl LlamaLauncherService {
             spec_draft_n_max: src.spec_draft_n_max,
             embeddings: src.embeddings,
             flash_attn_mode: src.flash_attn_mode.clone(),
-            kv_cache_type: src.kv_cache_type.clone(),
+            reasoning_mode: src.reasoning_mode.clone(),
+            seed: src.seed,
+            k_cache_type: src.k_cache_type.clone(),
+            v_cache_type: src.v_cache_type.clone(),
             extra_args: src.extra_args.clone(),
             advanced_values: src.advanced_values.clone(),
             advanced_modes: src.advanced_modes.clone(),
@@ -303,6 +306,11 @@ impl LlamaLauncherService {
         } else {
             existing.enable_mtp
         };
+        let seed = if let Some(v) = profile_data.get("seed") {
+            coerce_int(v, "seed")?
+        } else {
+            existing.seed
+        };
         let spec_draft_n_max = if let Some(v) = profile_data.get("spec_draft_n_max") {
             coerce_int(v, "spec_draft_n_max")?
         } else {
@@ -351,6 +359,7 @@ impl LlamaLauncherService {
                 .get("temp")
                 .and_then(|v| v.as_f64())
                 .unwrap_or(existing.temp),
+            seed,
             top_p: profile_data
                 .get("top_p")
                 .and_then(|v| v.as_f64())
@@ -374,11 +383,23 @@ impl LlamaLauncherService {
                 .and_then(|v| v.as_str())
                 .map(String::from)
                 .unwrap_or_else(|| existing.flash_attn_mode.clone()),
-            kv_cache_type: profile_data
-                .get("kv_cache_type")
+            reasoning_mode: profile_data
+                .get("reasoning_mode")
                 .and_then(|v| v.as_str())
                 .map(String::from)
-                .unwrap_or_else(|| existing.kv_cache_type.clone()),
+                .unwrap_or_else(|| existing.reasoning_mode.clone()),
+            k_cache_type: profile_data
+                .get("k_cache_type")
+                .or_else(|| profile_data.get("kv_cache_type"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .unwrap_or_else(|| existing.k_cache_type.clone()),
+            v_cache_type: profile_data
+                .get("v_cache_type")
+                .or_else(|| profile_data.get("kv_cache_type"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .unwrap_or_else(|| existing.v_cache_type.clone()),
             extra_args: profile_data
                 .get("extra_args")
                 .and_then(|v| v.as_str())

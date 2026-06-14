@@ -273,6 +273,7 @@ pub struct Profile {
     pub threads: i64,
     pub n_gpu_layers: i64,
     pub temp: f64,
+    pub seed: i64,
     pub top_p: f64,
     pub top_k: i64,
     pub min_p: f64,
@@ -283,7 +284,9 @@ pub struct Profile {
     pub spec_draft_n_max: i64,
     pub embeddings: bool,
     pub flash_attn_mode: String,
-    pub kv_cache_type: String,
+    pub reasoning_mode: String,
+    pub k_cache_type: String,
+    pub v_cache_type: String,
     pub extra_args: String,
     pub advanced_values: HashMap<String, String>,
     pub advanced_modes: HashMap<String, String>,
@@ -303,6 +306,7 @@ impl Default for Profile {
             threads: 8,
             n_gpu_layers: 0,
             temp: 0.7,
+            seed: -1,
             top_p: 0.95,
             top_k: 40,
             min_p: 0.05,
@@ -313,7 +317,9 @@ impl Default for Profile {
             spec_draft_n_max: 2,
             embeddings: false,
             flash_attn_mode: "off".into(),
-            kv_cache_type: "f16".into(),
+            reasoning_mode: "off".into(),
+            k_cache_type: "f16".into(),
+            v_cache_type: "f16".into(),
             extra_args: String::new(),
             advanced_values: HashMap::new(),
             advanced_modes: HashMap::new(),
@@ -359,6 +365,15 @@ impl<'de> Deserialize<'de> for Profile {
         if let Some(v) = map.get("temp").and_then(|v| v.as_f64()) {
             p.temp = v;
         }
+        if let Some(v) = map.get("seed") {
+            if let Some(n) = v.as_i64() {
+                p.seed = n;
+            } else if let Some(s) = v.as_str() {
+                if let Ok(n) = s.parse::<i64>() {
+                    p.seed = n;
+                }
+            }
+        }
         if let Some(v) = map.get("top_p").and_then(|v| v.as_f64()) {
             p.top_p = v;
         }
@@ -399,8 +414,18 @@ impl<'de> Deserialize<'de> for Profile {
         if let Some(v) = map.get("flash_attn_mode").and_then(|v| v.as_str()) {
             p.flash_attn_mode = v.to_string();
         }
+        if let Some(v) = map.get("reasoning_mode").and_then(|v| v.as_str()) {
+            p.reasoning_mode = v.to_string();
+        }
+        if let Some(v) = map.get("k_cache_type").and_then(|v| v.as_str()) {
+            p.k_cache_type = v.to_string();
+        }
+        if let Some(v) = map.get("v_cache_type").and_then(|v| v.as_str()) {
+            p.v_cache_type = v.to_string();
+        }
         if let Some(v) = map.get("kv_cache_type").and_then(|v| v.as_str()) {
-            p.kv_cache_type = v.to_string();
+            p.k_cache_type = v.to_string();
+            p.v_cache_type = v.to_string();
         }
         if let Some(v) = map.get("extra_args").and_then(|v| v.as_str()) {
             p.extra_args = v.to_string();

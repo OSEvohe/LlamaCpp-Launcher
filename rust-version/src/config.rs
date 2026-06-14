@@ -507,6 +507,7 @@ mod tests {
             threads: 4,
             n_gpu_layers: 35,
             temp: 0.8,
+            seed: 1234,
             top_p: 0.9,
             top_k: 50,
             min_p: 0.1,
@@ -517,7 +518,9 @@ mod tests {
             spec_draft_n_max: 4,
             embeddings: true,
             flash_attn_mode: "on".into(),
-            kv_cache_type: "q8_0".into(),
+            reasoning_mode: "on".into(),
+            k_cache_type: "q8_0".into(),
+            v_cache_type: "q4_0".into(),
             extra_args: "--verbose".into(),
             advanced_values: {
                 let mut m = HashMap::new();
@@ -546,6 +549,7 @@ mod tests {
         assert_eq!(original.threads, restored.threads);
         assert_eq!(original.n_gpu_layers, restored.n_gpu_layers);
         assert_eq!(original.temp, restored.temp);
+        assert_eq!(original.seed, restored.seed);
         assert_eq!(original.top_p, restored.top_p);
         assert_eq!(original.top_k, restored.top_k);
         assert_eq!(original.min_p, restored.min_p);
@@ -556,7 +560,9 @@ mod tests {
         assert_eq!(original.spec_draft_n_max, restored.spec_draft_n_max);
         assert_eq!(original.embeddings, restored.embeddings);
         assert_eq!(original.flash_attn_mode, restored.flash_attn_mode);
-        assert_eq!(original.kv_cache_type, restored.kv_cache_type);
+        assert_eq!(original.reasoning_mode, restored.reasoning_mode);
+        assert_eq!(original.k_cache_type, restored.k_cache_type);
+        assert_eq!(original.v_cache_type, restored.v_cache_type);
         assert_eq!(original.extra_args, restored.extra_args);
         assert_eq!(original.advanced_values, restored.advanced_values);
         assert_eq!(original.advanced_modes, restored.advanced_modes);
@@ -633,6 +639,7 @@ mod tests {
             "threads": 8,
             "n_gpu_layers": 0,
             "temp": 0.7,
+            "seed": -1,
             "top_p": 0.95,
             "top_k": 40,
             "min_p": 0.05,
@@ -643,7 +650,9 @@ mod tests {
             "spec_draft_n_max": 2,
             "embeddings": false,
             "flash_attn_mode": "off",
-            "kv_cache_type": "f16",
+            "reasoning_mode": "off",
+            "k_cache_type": "f16",
+            "v_cache_type": "f16",
             "extra_args": "",
             "advanced_values": {
                 "--spec-type": "draft-mtp"
@@ -682,6 +691,7 @@ mod tests {
             "threads": 8,
             "n_gpu_layers": 0,
             "temp": 0.7,
+            "seed": -1,
             "top_p": 0.95,
             "top_k": 40,
             "min_p": 0.05,
@@ -692,7 +702,9 @@ mod tests {
             "spec_draft_n_max": 2,
             "embeddings": false,
             "flash_attn_mode": "off",
-            "kv_cache_type": "f16",
+            "reasoning_mode": "off",
+            "k_cache_type": "f16",
+            "v_cache_type": "f16",
             "extra_args": "",
             "advanced_values": {
                 "--spec-draft-n-max": "5"
@@ -731,6 +743,7 @@ mod tests {
             "threads": 8,
             "n_gpu_layers": 0,
             "temp": 0.7,
+            "seed": -1,
             "top_p": 0.95,
             "top_k": 40,
             "min_p": 0.05,
@@ -741,7 +754,8 @@ mod tests {
             "spec_draft_n_max": 2,
             "embeddings": false,
             "flash_attn": true,
-            "kv_cache_type": "f16",
+            "k_cache_type": "f16",
+            "v_cache_type": "f16",
             "extra_args": "",
             "advanced_values": {},
             "advanced_modes": {},
@@ -784,6 +798,7 @@ mod tests {
         assert_eq!(actual["threads"], 8);
         assert_eq!(actual["n_gpu_layers"], 0);
         assert_eq!(actual["temp"], 0.7);
+        assert_eq!(actual["seed"], -1);
         assert_eq!(actual["top_p"], 0.95);
         assert_eq!(actual["top_k"], 40);
         assert_eq!(actual["min_p"], 0.05);
@@ -794,7 +809,9 @@ mod tests {
         assert_eq!(actual["spec_draft_n_max"], 2);
         assert_eq!(actual["embeddings"], false);
         assert_eq!(actual["flash_attn_mode"], "off");
-        assert_eq!(actual["kv_cache_type"], "f16");
+        assert_eq!(actual["reasoning_mode"], "off");
+        assert_eq!(actual["k_cache_type"], "f16");
+        assert_eq!(actual["v_cache_type"], "f16");
         assert_eq!(actual["extra_args"], "");
         assert!(actual["advanced_values"].is_object());
         assert!(actual["advanced_modes"].is_object());
@@ -863,6 +880,7 @@ mod tests {
         assert_eq!(profile.threads, 8);
         assert_eq!(profile.n_gpu_layers, 0);
         assert_eq!(profile.temp, 0.7);
+        assert_eq!(profile.seed, -1);
         assert_eq!(profile.top_p, 0.95);
         assert_eq!(profile.top_k, 40);
         assert_eq!(profile.min_p, 0.05);
@@ -873,7 +891,9 @@ mod tests {
         assert_eq!(profile.spec_draft_n_max, 2);
         assert_eq!(profile.embeddings, false);
         assert_eq!(profile.flash_attn_mode, "off");
-        assert_eq!(profile.kv_cache_type, "f16");
+        assert_eq!(profile.reasoning_mode, "off");
+        assert_eq!(profile.k_cache_type, "f16");
+        assert_eq!(profile.v_cache_type, "f16");
         assert_eq!(profile.extra_args, "");
         assert!(profile.advanced_values.is_empty());
         assert!(profile.advanced_modes.is_empty());

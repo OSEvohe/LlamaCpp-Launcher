@@ -137,6 +137,8 @@ pub fn build_command(
     cmd.push(profile.n_gpu_layers.to_string());
     cmd.push("--temp".into());
     cmd.push(float_to_py_string(profile.temp));
+    cmd.push("--seed".into());
+    cmd.push(profile.seed.to_string());
     cmd.push("--top-p".into());
     cmd.push(float_to_py_string(profile.top_p));
     cmd.push("--top-k".into());
@@ -151,10 +153,12 @@ pub fn build_command(
     cmd.push(profile.batch_size.to_string());
     cmd.push("--flash-attn".into());
     cmd.push(profile.flash_attn_mode.clone());
+    cmd.push("--reasoning".into());
+    cmd.push(profile.reasoning_mode.clone());
     cmd.push("--cache-type-k".into());
-    cmd.push(profile.kv_cache_type.clone());
+    cmd.push(profile.k_cache_type.clone());
     cmd.push("--cache-type-v".into());
-    cmd.push(profile.kv_cache_type.clone());
+    cmd.push(profile.v_cache_type.clone());
 
     // MTP flags
     if profile.enable_mtp {
@@ -385,6 +389,7 @@ mod tests {
             threads: 8,
             n_gpu_layers: 35,
             temp: 0.7,
+            seed: -1,
             top_p: 0.95,
             top_k: 40,
             min_p: 0.05,
@@ -395,7 +400,9 @@ mod tests {
             spec_draft_n_max: 2,
             embeddings: false,
             flash_attn_mode: "off".into(),
-            kv_cache_type: "f16".into(),
+            reasoning_mode: "off".into(),
+            k_cache_type: "f16".into(),
+            v_cache_type: "f16".into(),
             extra_args: String::new(),
             advanced_values: HashMap::new(),
             advanced_modes: HashMap::new(),
@@ -431,24 +438,28 @@ mod tests {
         assert_eq!(cmd[12], "35");
         assert_eq!(cmd[13], "--temp");
         assert_eq!(cmd[14], "0.7");
-        assert_eq!(cmd[15], "--top-p");
-        assert_eq!(cmd[16], "0.95");
-        assert_eq!(cmd[17], "--top-k");
-        assert_eq!(cmd[18], "40");
-        assert_eq!(cmd[19], "--min-p");
-        assert_eq!(cmd[20], "0.05");
-        assert_eq!(cmd[21], "--presence-penalty");
-        assert_eq!(cmd[22], "0.0");
-        assert_eq!(cmd[23], "--parallel");
-        assert_eq!(cmd[24], "1");
-        assert_eq!(cmd[25], "--batch-size");
-        assert_eq!(cmd[26], "512");
-        assert_eq!(cmd[27], "--flash-attn");
-        assert_eq!(cmd[28], "off");
-        assert_eq!(cmd[29], "--cache-type-k");
-        assert_eq!(cmd[30], "f16");
-        assert_eq!(cmd[31], "--cache-type-v");
-        assert_eq!(cmd[32], "f16");
+        assert_eq!(cmd[15], "--seed");
+        assert_eq!(cmd[16], "-1");
+        assert_eq!(cmd[17], "--top-p");
+        assert_eq!(cmd[18], "0.95");
+        assert_eq!(cmd[19], "--top-k");
+        assert_eq!(cmd[20], "40");
+        assert_eq!(cmd[21], "--min-p");
+        assert_eq!(cmd[22], "0.05");
+        assert_eq!(cmd[23], "--presence-penalty");
+        assert_eq!(cmd[24], "0.0");
+        assert_eq!(cmd[25], "--parallel");
+        assert_eq!(cmd[26], "1");
+        assert_eq!(cmd[27], "--batch-size");
+        assert_eq!(cmd[28], "512");
+        assert_eq!(cmd[29], "--flash-attn");
+        assert_eq!(cmd[30], "off");
+        assert_eq!(cmd[31], "--reasoning");
+        assert_eq!(cmd[32], "off");
+        assert_eq!(cmd[33], "--cache-type-k");
+        assert_eq!(cmd[34], "f16");
+        assert_eq!(cmd[35], "--cache-type-v");
+        assert_eq!(cmd[36], "f16");
 
         // No MTP flags (enable_mtp = false)
         assert!(!cmd.iter().any(|s| s == "--spec-type"));
@@ -457,8 +468,8 @@ mod tests {
         // No embeddings
         assert!(!cmd.iter().any(|s| s == "--embeddings"));
 
-        // Exactly 33 elements (base args, no extras)
-        assert_eq!(cmd.len(), 33);
+        // Exactly 37 elements (base args, no extras)
+        assert_eq!(cmd.len(), 37);
     }
 
     /// Acceptance: MTP flags appear when enable_mtp=true.
