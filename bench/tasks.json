@@ -1,0 +1,64 @@
+[
+  {
+    "id": "monitoring-api-test",
+    "title": "Add monitoring endpoint API test",
+    "verify_command": "cargo test --manifest-path rust-version\\Cargo.toml api_endpoints",
+    "context_files": [
+      "rust-version/tests/api_endpoints.rs",
+      "rust-version/src/server.rs"
+    ],
+    "prompt": "Add an API integration test for GET /api/monitoring. Reuse the existing test server helpers. Assert HTTP 200. Assert the JSON contains at least running and pid. Keep the test style consistent with existing API endpoint tests. Make the smallest correct change."
+  },
+  {
+    "id": "perf-api-tests",
+    "title": "Add perf endpoint API tests",
+    "verify_command": "cargo test --manifest-path rust-version\\Cargo.toml api_endpoints",
+    "context_files": [
+      "rust-version/tests/api_endpoints.rs",
+      "rust-version/src/server.rs"
+    ],
+    "prompt": "Add API tests for GET /api/perf and POST /api/perf/reset. GET /api/perf must return 200 and include prompt_tps, gen_tps, and model_loaded. POST /api/perf/reset must return 200 and a JSON body with reset=true. Keep the diff minimal and follow the existing endpoint test style."
+  },
+  {
+    "id": "stale-active-version-test",
+    "title": "Add stale active version regression test",
+    "verify_command": "cargo test --manifest-path rust-version\\Cargo.toml resolve_active",
+    "context_files": [
+      "rust-version/src/service/mod.rs",
+      "rust-version/src/service/version_queries.rs"
+    ],
+    "prompt": "Add a regression test for resolving the active executable when active_version points to a missing executable path. Use the service layer unit test style already present in src/service/mod.rs. Register an installed version whose executable_path does not exist, set it active, and assert resolve_active_executable returns an error mentioning stale or missing executable. Keep the change minimal."
+  },
+  {
+    "id": "restore-invalid-version-dirs-test",
+    "title": "Add restore_installed_versions invalid-dir regression test",
+    "verify_command": "cargo test --manifest-path rust-version\\Cargo.toml restore_installed_versions",
+    "context_files": [
+      "rust-version/src/service/mod.rs"
+    ],
+    "prompt": "Add a regression test for restore_installed_versions_from_disk() to ensure it ignores hidden directories, empty tag directories, and directories without a llama-server executable. Follow the existing service test style. Create temp version directories under .launcher/versions and verify only valid installs are restored. Keep the diff minimal."
+  },
+  {
+    "id": "legacy-installed-versions-test",
+    "title": "Add legacy installed versions fallback test",
+    "verify_command": "cargo test --manifest-path rust-version\\Cargo.toml legacy",
+    "context_files": [
+      "rust-version/src/service/mod.rs",
+      "rust-version/src/service/version_queries.rs"
+    ],
+    "prompt": "Add a unit test for listing installed versions when global settings has no installed_versions but does have llama_server_path. Assert a synthetic legacy InstalledVersion is returned, with tag == legacy, source == legacy, and a status that reflects whether the executable path exists. Match the local unit test style and keep the change minimal."
+  },
+  {
+    "id": "install-state-endpoint",
+    "title": "Add install state by tag API endpoint",
+    "verify_command": "cargo test --manifest-path rust-version\\Cargo.toml api_endpoints",
+    "context_files": [
+      "rust-version/tests/api_endpoints.rs",
+      "rust-version/src/server.rs",
+      "rust-version/src/service/mod.rs",
+      "rust-version/src/service/version_queries.rs",
+      "rust-version/src/models.rs"
+    ],
+    "prompt": "Add a small API endpoint to return install state for a version tag. Add a route under /api/versions/:tag that returns 200 with the install state when present and 404 with an error JSON when missing. Add API tests covering both present and missing cases. Reuse existing API error patterns and service methods. Keep the change minimal."
+  }
+]
