@@ -21,33 +21,137 @@
     .ok { color: #7ee787; }
     .fail { color: #ff7b72; }
     .muted { color: #999; }
+    /* Tabs */
+    .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+    .tab-btn { flex: 1; padding: 10px; background: #222; color: #eee; border: 1px solid #444; border-radius: 6px; cursor: pointer; text-align: center; }
+    .tab-btn.active { background: #333; border-color: #666; }
+    .tab-page { display: none; }
+    .tab-page.active { display: block; }
+    /* Config form */
+    .form-group { margin-bottom: 10px; }
+    .form-group label { display: block; width: auto; margin-bottom: 4px; font-size: 0.9em; }
+    .form-group input, .form-group select { display: block; width: 100%; padding: 8px; background: #222; color: #eee; border: 1px solid #444; border-radius: 4px; box-sizing: border-box; }
+    .model-list { max-height: 300px; overflow: auto; border: 1px solid #333; padding: 8px; margin-bottom: 10px; }
+    .model-entry { display: flex; justify-content: space-between; align-items: center; padding: 8px; border: 1px solid #333; border-radius: 6px; margin-bottom: 6px; cursor: pointer; }
+    .model-entry:hover { border-color: #666; }
+    .model-entry.selected { border-color: #7ee787; background: #1a2e1a; }
+    .model-entry .name { font-weight: bold; }
+    .model-entry .detail { font-size: 0.85em; color: #999; }
+    .btn-row { display: flex; gap: 8px; margin-bottom: 10px; }
+    .btn-row button { flex: 1; }
+    .btn-danger { background: #5a1a1a; border-color: #8b3a3a; }
+    .btn-danger:hover { background: #6a2a2a; }
+    .status-msg { padding: 8px; border-radius: 4px; margin-bottom: 10px; font-size: 0.9em; }
+    .status-ok { background: #1a2e1a; color: #7ee787; }
+    .status-err { background: #2e1a1a; color: #ff7b72; }
+    /* Runs */
+    .runs-list { max-height: 600px; overflow: auto; }
+    .run-card { border: 1px solid #333; border-radius: 6px; padding: 10px; margin-bottom: 8px; cursor: pointer; }
+    .run-card:hover { border-color: #666; }
+    .run-card.active { border-color: #7ee787; background: #1a2e1a; }
+    .run-card .run-id { font-weight: bold; }
+    .run-card .run-meta { font-size: 0.85em; color: #999; margin-top: 2px; }
+    .run-card .run-bar { display: flex; gap: 12px; margin-top: 6px; font-size: 0.85em; }
+    .run-summary { display: flex; gap: 16px; padding: 8px; background: #0d0d0d; border-radius: 6px; margin-bottom: 10px; font-size: 0.9em; }
+    .run-summary span { display: flex; align-items: center; gap: 4px; }
+    .artifact-btn { display: inline-block; width: auto; margin-bottom: 4px; padding: 4px 10px; font-size: 0.85em; }
   </style>
 </head>
 <body>
   <h1>Coding Bench UI</h1>
-  <div class="grid">
-    <div class="card">
-      <h2>Launch</h2>
-      <label for="modelsFile">Models file</label>
-      <select id="modelsFile"></select>
-      <div id="tasks" class="task-list"></div>
-      <button id="launchBtn">Launch bench</button>
-      <button id="restartBtn">Restart UI</button>
-      <div id="launchStatus" class="muted"></div>
-      <h2>Jobs</h2>
-      <div id="jobs"></div>
-    </div>
-    <div class="card">
-      <h2>Runs</h2>
-      <div id="runs"></div>
-      <h2>Run details</h2>
-      <div id="runDetails" class="muted">Select a run.</div>
-      <h2>Artifact</h2>
-      <pre id="artifactView">Select an artifact.</pre>
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="launch">Launch</button>
+    <button class="tab-btn" data-tab="config">Config</button>
+    <button class="tab-btn" data-tab="runs">Runs</button>
+  </div>
+
+  <!-- Launch tab -->
+  <div id="tab-launch" class="tab-page active">
+    <div class="grid">
+      <div class="card">
+        <h2>Launch</h2>
+        <label for="modelsFile">Models file</label>
+        <select id="modelsFile"></select>
+        <div id="tasks" class="task-list"></div>
+        <button id="launchBtn">Launch bench</button>
+        <button id="restartBtn">Restart UI</button>
+        <div id="launchStatus" class="muted"></div>
+        <h2>Jobs</h2>
+        <div id="jobs"></div>
+      </div>
+      <div class="card">
+        <h2>Quick Runs</h2>
+        <div id="runsQuick" class="muted">See Runs tab for details.</div>
+      </div>
     </div>
   </div>
+
+  <!-- Config tab -->
+  <div id="tab-config" class="tab-page">
+    <div class="grid">
+      <div class="card">
+        <h2>Models</h2>
+        <label for="configFile">Config file</label>
+        <select id="configFile"></select>
+        <div id="modelList" class="model-list"></div>
+        <div id="configStatus"></div>
+      </div>
+      <div class="card">
+        <h2 id="formTitle">Add Model</h2>
+        <div class="form-group">
+          <label for="modelName">Name</label>
+          <input type="text" id="modelName" placeholder="my-model">
+        </div>
+        <div class="form-group">
+          <label for="modelBaseUrl">Base URL</label>
+          <input type="text" id="modelBaseUrl" placeholder="http://127.0.0.1:8080/v1">
+        </div>
+        <div class="form-group">
+          <label for="modelId">Model ID</label>
+          <input type="text" id="modelId" placeholder="model.gguf">
+        </div>
+        <div class="form-group">
+          <label for="modelApiKey">API Key</label>
+          <input type="text" id="modelApiKey" placeholder="">
+        </div>
+        <div class="row">
+          <div class="form-group">
+            <label for="modelTemp">Temperature</label>
+            <input type="number" id="modelTemp" value="0.0" step="0.1" min="0" max="2">
+          </div>
+          <div class="form-group">
+            <label for="modelMaxTokens">Max Tokens</label>
+            <input type="number" id="modelMaxTokens" value="8192" step="1" min="1">
+          </div>
+        </div>
+        <div class="btn-row">
+          <button id="configSaveBtn">Save</button>
+          <button id="configCancelBtn">Cancel</button>
+          <button id="configDeleteBtn" class="btn-danger">Delete</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Runs tab -->
+  <div id="tab-runs" class="tab-page">
+    <div class="grid">
+      <div class="card">
+        <h2>Runs</h2>
+        <div id="runsList" class="runs-list"></div>
+      </div>
+      <div class="card">
+        <h2 id="runDetailTitle">Run details</h2>
+        <div id="runSummary" class="muted"></div>
+        <div id="runDetails"></div>
+        <h2>Artifact</h2>
+        <pre id="artifactView">Select an artifact.</pre>
+      </div>
+    </div>
+  </div>
+
   <script>
-    const state = { runs: [], tasks: [] };
+    const state = { runs: [], tasks: [], configModels: [], editingIndex: -1 };
 
     async function fetchJson(url, options) {
       const resp = await fetch(url, options);
@@ -59,6 +163,151 @@
       return Array.from(document.querySelectorAll('input[name="task"]:checked')).map(x => x.value);
     }
 
+    /* ---- Tabs ---- */
+    let configLoaded = false;
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-page').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+        if (btn.dataset.tab === 'config' && !configLoaded) {
+          configLoaded = true;
+          loadConfigFile();
+        }
+      });
+    });
+
+    /* ---- Config helpers ---- */
+    function showConfigStatus(msg, isError) {
+      const el = document.getElementById('configStatus');
+      el.innerHTML = `<div class="status-msg ${isError ? 'status-err' : 'status-ok'}">${msg}</div>`;
+      setTimeout(() => { el.innerHTML = ''; }, 3000);
+    }
+
+    function clearForm() {
+      state.editingIndex = -1;
+      document.getElementById('formTitle').textContent = 'Add Model';
+      document.getElementById('modelName').value = '';
+      document.getElementById('modelBaseUrl').value = 'http://127.0.0.1:8080/v1';
+      document.getElementById('modelId').value = '';
+      document.getElementById('modelApiKey').value = '';
+      document.getElementById('modelTemp').value = '0.0';
+      document.getElementById('modelMaxTokens').value = '8192';
+      document.querySelectorAll('.model-entry').forEach(e => e.classList.remove('selected'));
+    }
+
+    function fillForm(model) {
+      state.editingIndex = state.configModels.indexOf(model);
+      document.getElementById('formTitle').textContent = 'Edit Model';
+      document.getElementById('modelName').value = model.name || '';
+      document.getElementById('modelBaseUrl').value = model.base_url || '';
+      document.getElementById('modelId').value = model.model || '';
+      document.getElementById('modelApiKey').value = model.api_key || '';
+      document.getElementById('modelTemp').value = model.temperature ?? 0.0;
+      document.getElementById('modelMaxTokens').value = model.max_tokens ?? 8192;
+      document.querySelectorAll('.model-entry').forEach(e => e.classList.remove('selected'));
+      const entries = document.querySelectorAll('.model-entry');
+      if (state.editingIndex >= 0 && entries[state.editingIndex]) {
+        entries[state.editingIndex].classList.add('selected');
+      }
+    }
+
+    function readForm() {
+      return {
+        name: document.getElementById('modelName').value.trim(),
+        base_url: document.getElementById('modelBaseUrl').value.trim(),
+        model: document.getElementById('modelId').value.trim(),
+        api_key: document.getElementById('modelApiKey').value.trim(),
+        temperature: parseFloat(document.getElementById('modelTemp').value) || 0.0,
+        max_tokens: parseInt(document.getElementById('modelMaxTokens').value, 10) || 8192
+      };
+    }
+
+    function renderModelList(models) {
+      const root = document.getElementById('modelList');
+      if (!models.length) {
+        root.innerHTML = '<div class="muted">No models in this file.</div>';
+        return;
+      }
+      root.innerHTML = models.map((m, i) =>
+        `<div class="model-entry" data-index="${i}">
+          <div>
+            <div class="name">${m.name || '(unnamed)'}</div>
+            <div class="detail">${m.base_url || ''} / ${m.model || ''}</div>
+          </div>
+        </div>`
+      ).join('');
+      root.querySelectorAll('.model-entry').forEach(entry => {
+        entry.addEventListener('click', () => {
+          const idx = parseInt(entry.dataset.index, 10);
+          fillForm(state.configModels[idx]);
+        });
+      });
+    }
+
+    async function loadConfigFile() {
+      const file = document.getElementById('configFile').value;
+      if (!file) return;
+      try {
+        const data = await fetchJson('/api/models/' + encodeURIComponent(file));
+        state.configModels = data.models || [];
+        renderModelList(state.configModels);
+        clearForm();
+      } catch (e) {
+        showConfigStatus('Failed to load: ' + e.message, true);
+      }
+    }
+
+    async function saveConfigModel() {
+      const file = document.getElementById('configFile').value;
+      if (!file) { showConfigStatus('No config file selected.', true); return; }
+      const model = readForm();
+      if (!model.name) { showConfigStatus('Name is required.', true); return; }
+      try {
+        if (state.editingIndex >= 0) {
+          await fetchJson('/api/models/' + encodeURIComponent(file), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(model)
+          });
+          showConfigStatus('Model updated.');
+        } else {
+          await fetchJson('/api/models/' + encodeURIComponent(file), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(model)
+          });
+          showConfigStatus('Model added.');
+        }
+        await loadConfigFile();
+        clearForm();
+      } catch (e) {
+        showConfigStatus('Save failed: ' + e.message, true);
+      }
+    }
+
+    async function deleteConfigModel() {
+      const file = document.getElementById('configFile').value;
+      if (!file) { showConfigStatus('No config file selected.', true); return; }
+      if (state.editingIndex < 0) { showConfigStatus('Select a model to delete.', true); return; }
+      const model = state.configModels[state.editingIndex];
+      if (!model || !model.name) { showConfigStatus('Cannot delete unnamed model.', true); return; }
+      try {
+        await fetchJson('/api/models/' + encodeURIComponent(file), {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: model.name })
+        });
+        showConfigStatus('Model deleted.');
+        await loadConfigFile();
+        clearForm();
+      } catch (e) {
+        showConfigStatus('Delete failed: ' + e.message, true);
+      }
+    }
+
+    /* ---- Tasks ---- */
     function renderTasks(tasks) {
       const root = document.getElementById('tasks');
       root.innerHTML = '';
@@ -69,6 +318,7 @@
       });
     }
 
+    /* ---- Jobs ---- */
     function renderJobs(jobs) {
       const root = document.getElementById('jobs');
       root.innerHTML = jobs.map(job => `
@@ -80,25 +330,60 @@
       `).join('') || '<div class="muted">No jobs yet.</div>';
     }
 
+    /* ---- Runs ---- */
     function renderRuns(runs) {
       state.runs = runs;
-      const root = document.getElementById('runs');
-      root.innerHTML = runs.map(run => `
-        <div style="margin-bottom:10px;border:1px solid #333;padding:8px;border-radius:6px;">
-          <div><strong>${run.id}</strong></div>
-          <div class="muted">${run.generated_at}</div>
-          <button onclick="showRun('${run.id}')">Open</button>
-        </div>
-      `).join('') || '<div class="muted">No runs yet.</div>';
+      const root = document.getElementById('runsList');
+      if (!runs.length) { root.innerHTML = '<div class="muted">No runs yet.</div>'; return; }
+      root.innerHTML = runs.map(run => {
+        const results = run.summary.results || [];
+        const ok = results.filter(r => r.verify_ok).length;
+        const fail = results.length - ok;
+        return `<div class="run-card" data-run="${run.id}" onclick="showRun('${run.id}')">
+          <div class="run-id">${run.id}</div>
+          <div class="run-meta">${run.generated_at}</div>
+          <div class="run-bar">
+            <span class="ok">✓ ${ok}</span>
+            <span class="fail">✗ ${fail}</span>
+            <span class="muted">${results.length} tasks</span>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    function renderRunsQuick(runs) {
+      const root = document.getElementById('runsQuick');
+      if (!runs.length) { root.innerHTML = '<div class="muted">No runs yet.</div>'; return; }
+      root.innerHTML = runs.slice(0, 5).map(run =>
+        `<div style="margin-bottom:6px;"><strong>${run.id}</strong> <span class="muted">${run.generated_at}</span></div>`
+      ).join('');
     }
 
     async function showRun(runId) {
       const summary = await fetchJson(`/api/run/${runId}`);
+      const results = summary.results || [];
+      const ok = results.filter(r => r.verify_ok).length;
+      const fail = results.length - ok;
+
+      // highlight active run card
+      document.querySelectorAll('.run-card').forEach(c => c.classList.remove('active'));
+      const activeCard = document.querySelector(`.run-card[data-run="${runId}"]`);
+      if (activeCard) activeCard.classList.add('active');
+
+      // summary bar
+      document.getElementById('runSummary').innerHTML =
+        `<div class="run-summary">
+          <span><strong>${runId}</strong></span>
+          <span class="ok">✓ ${ok}</span>
+          <span class="fail">✗ ${fail}</span>
+          <span class="muted">${summary.generated_at}</span>
+        </div>`;
+
       const root = document.getElementById('runDetails');
-      const rows = summary.results.map(item => {
-        const artifact = `<button onclick="showArtifact('${runId}','${item.artifacts_dir}/response.txt')">response</button>
-<button onclick="showArtifact('${runId}','${item.artifacts_dir}/apply.log')">apply</button>
-<button onclick="showArtifact('${runId}','${item.artifacts_dir}/verify.log')">verify</button>`;
+      const rows = results.map(item => {
+        const artifact = `<button class="artifact-btn" onclick="showArtifact('${runId}','${item.artifacts_dir}/response.txt')">response</button>
+<button class="artifact-btn" onclick="showArtifact('${runId}','${item.artifacts_dir}/apply.log')">apply</button>
+<button class="artifact-btn" onclick="showArtifact('${runId}','${item.artifacts_dir}/verify.log')">verify</button>`;
         return `<tr>
           <td>${item.model}</td>
           <td>${item.task}</td>
@@ -115,6 +400,7 @@
       document.getElementById('artifactView').textContent = text;
     }
 
+    /* ---- Launch ---- */
     async function launchBench() {
       const modelsFile = document.getElementById('modelsFile').value;
       const tasks = selectedTasks();
@@ -137,6 +423,7 @@
       });
     }
 
+    /* ---- Refresh ---- */
     async function refresh() {
       const config = await fetchJson('/api/config');
       const modelSelect = document.getElementById('modelsFile');
@@ -148,16 +435,32 @@
           modelSelect.appendChild(opt);
         });
       }
+      const configSelect = document.getElementById('configFile');
+      if (!configSelect.options.length) {
+        config.model_files.forEach(name => {
+          const opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          configSelect.appendChild(opt);
+        });
+      }
       if (!state.tasks.length) {
         state.tasks = config.tasks;
         renderTasks(config.tasks);
       }
       renderJobs(config.jobs);
       renderRuns(config.runs);
+      renderRunsQuick(config.runs);
     }
 
+    /* ---- Events ---- */
     document.getElementById('launchBtn').addEventListener('click', launchBench);
     document.getElementById('restartBtn').addEventListener('click', restartUi);
+    document.getElementById('configFile').addEventListener('change', loadConfigFile);
+    document.getElementById('configSaveBtn').addEventListener('click', saveConfigModel);
+    document.getElementById('configCancelBtn').addEventListener('click', clearForm);
+    document.getElementById('configDeleteBtn').addEventListener('click', deleteConfigModel);
+
     refresh();
     setInterval(refresh, 5000);
   </script>

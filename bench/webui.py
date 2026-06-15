@@ -1,6 +1,7 @@
 import argparse
 import json
 import subprocess
+import sys
 import threading
 import uuid
 from datetime import datetime
@@ -47,6 +48,17 @@ def available_model_files() -> list[str]:
             continue
         files.append(path.name)
     return files
+
+
+def safe_models_file(filename: str) -> Path | None:
+    path = (ROOT / filename).resolve()
+    try:
+        path.relative_to(ROOT.resolve())
+    except ValueError:
+        return None
+    if not path.exists() or not path.is_file():
+        return None
+    return path
 
 
 def available_tasks() -> list[dict]:
@@ -103,17 +115,28 @@ def update_job(job_id: str, **fields):
 
 
 def run_job(job_id: str, command: list[str], cwd: Path, results_dir: Path):
-    proc = subprocess.run(command, cwd=str(cwd), text=True, capture_output=True)
-    combined = (proc.stdout or "") + (proc.stderr or "")
-    log_path = results_dir / "webui-launch.log"
-    log_path.write_text(combined, encoding="utf-8")
-    update_job(
-        job_id,
-        status="completed" if proc.returncode == 0 else "failed",
-        returncode=proc.returncode,
-        finished_at=datetime.now().isoformat(),
-        log_file=str(log_path.relative_to(REPO_ROOT)),
-    )
+    try:
+        command = [sys.executable] + command[1:]
+        proc = subprocess.run(command, cwd=str(cwd), text=True, capture_output=True)
+        combined = (proc.stdout or "") + (proc.stderr or "")
+        log_path = results_dir / "webui-launch.log"
+        log_path.write_text(combined, encoding="utf-8")
+        update_job(
+            job_id,
+            status="completed" if proc.returncode == 0 else "failed",
+            returncode=proc.returncode,
+            finished_at=datetime.now().isoformat(),
+            log_file=str(log_path.relative_to(REPO_ROOT)),
+        )
+    except Exception as exc:  # noqa: BLE001
+        update_job(
+            job_id,
+            status="failed",
+            returncode=None,
+            finished_at=datetime.now().isoformat(),
+            log_file=None,
+            error=str(exc),
+        )
 
 
 def create_job(models_file: str, selected_models: list[str], selected_tasks: list[str]) -> dict:
@@ -206,6 +229,30 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send_json(load_json(summary_file))
             return
+        if parsed.path == "/api/models":
+            result = []
+            for name in available_model_files():
+                path = ROOT / name
+                try:
+                    models = load_json(path)
+                    result.append({"file": name, "models": models})
+                except Exception as exc:
+                    result.append({"file": name, "models": [], "error": str(exc)})
+            self._send_json({"model_files": result})
+            return
+        if parsed.path.startswith("/api/models/"):
+            filename = parsed.path.split("/", 3)[3]
+            models_path = safe_models_file(filename)
+            if models_path is None:
+                self._send_json({"error": "models file not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            try:
+                models = load_json(models_path)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            self._send_json({"file": filename, "models": models})
+            return
         if parsed.path.startswith("/api/artifact"):
             query = parse_qs(parsed.query)
             run_id = query.get("run", [""])[0]
@@ -229,6 +276,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/models/"):
+            filename = parsed.path.split("/", 3)[3]
+            models_path = safe_models_file(filename)
+            if models_path is None:
+                self._send_json({"error": "models file not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            data = self._read_json()
+            try:
+                models = load_json(models_path)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            models.append(data)
+            write_json(models_path, models)
+            self._send_json({"file": filename, "models": models}, status=HTTPStatus.CREATED)
+            return
         if parsed.path == "/api/launch":
             data = self._read_json()
             models_file = str(data.get("models_file", "")).strip()
@@ -246,6 +309,61 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/restart":
             self._send_json({"restarting": True}, status=HTTPStatus.OK)
             threading.Thread(target=trigger_restart, daemon=True).start()
+            return
+        self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
+
+    def do_PUT(self):
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/models/"):
+            filename = parsed.path.split("/", 3)[3]
+            models_path = safe_models_file(filename)
+            if models_path is None:
+                self._send_json({"error": "models file not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            data = self._read_json()
+            name = str(data.get("name", "")).strip()
+            if not name:
+                self._send_json({"error": "name is required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                models = load_json(models_path)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            for i, entry in enumerate(models):
+                if str(entry.get("name", "")).strip() == name:
+                    models[i] = data
+                    write_json(models_path, models)
+                    self._send_json({"file": filename, "models": models})
+                    return
+            self._send_json({"error": "model not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+        self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/models/"):
+            filename = parsed.path.split("/", 3)[3]
+            models_path = safe_models_file(filename)
+            if models_path is None:
+                self._send_json({"error": "models file not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            data = self._read_json()
+            name = str(data.get("name", "")).strip()
+            if not name:
+                self._send_json({"error": "name is required"}, status=HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                models = load_json(models_path)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                return
+            filtered = [m for m in models if str(m.get("name", "")).strip() != name]
+            if len(filtered) == len(models):
+                self._send_json({"error": "model not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            write_json(models_path, filtered)
+            self._send_json({"file": filename, "models": filtered})
             return
         self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
 
